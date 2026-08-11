@@ -1,0 +1,30 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "wsl-release",
+      "displayName": "WSL Release",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build-wsl",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "BUILD_TESTING": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "wsl-release",
+      "configurePreset": "wsl-release"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "wsl-release",
+      "configurePreset": "wsl-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

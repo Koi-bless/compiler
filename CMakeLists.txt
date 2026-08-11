@@ -1,0 +1,29 @@
+cmake_minimum_required(VERSION 3.28)
+project(toyc_compiler LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+include(CTest)
+
+add_library(toyc_lib
+    src/support/diagnostic.cpp
+    src/frontend/lexer.cpp
+    src/frontend/ast_printer.cpp
+    src/frontend/parser.cpp
+    src/frontend/semantic.cpp
+    src/ir/cfg_builder.cpp
+    src/ir/verifier.cpp
+    src/backend/asm_printer.cpp)
+target_include_directories(toyc_lib PUBLIC include)
+target_compile_options(toyc_lib PRIVATE
+    $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic;-Wconversion>
+    $<$<CXX_COMPILER_ID:MSVC>:/W4;/permissive->)
+
+add_executable(compiler src/main.cpp)
+target_link_libraries(compiler PRIVATE toyc_lib)
+
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()

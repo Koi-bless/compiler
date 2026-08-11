@@ -1,2 +1,7 @@
 .agents/
 .codex/
+/build*/
+Testing/
+*.s
+*.exe
+*.out

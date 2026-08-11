@@ -1,0 +1,3 @@
+int state = 0;
+int touch() { state = state + 1; return 1; }
+int main() { if (0 && touch()) return 1; if (1 || touch()) return state; return 2; }

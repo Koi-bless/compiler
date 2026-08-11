@@ -1,0 +1,3 @@
+int state = 1;
+void twice() { state = state * 2; }
+int main() { twice(); twice(); return state; }
