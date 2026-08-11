@@ -1,0 +1,12 @@
+int main() {
+  int a = 1;
+  int b = 2;
+  int i = 0;
+  while (i < 3) {
+    int old = a;
+    a = b;
+    b = old;
+    i = i + 1;
+  }
+  return a * 10 + b;
+}

@@ -10,6 +10,10 @@ inline constexpr std::int64_t immediateMin = -2048;
 inline constexpr std::int64_t immediateMax = 2047;
 inline constexpr unsigned argumentRegisterCount = 8;
 
+inline constexpr bool fitsImmediate(std::int64_t value) {
+    return value >= immediateMin && value <= immediateMax;
+}
+
 [[nodiscard]] constexpr std::int64_t alignUp(std::int64_t value,
                                              std::int64_t alignment) {
     return (value + alignment - 1) / alignment * alignment;

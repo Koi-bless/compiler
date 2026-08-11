@@ -35,7 +35,24 @@ ctest --preset wsl-release
 
 When the RISC-V tools are installed, CTest automatically includes `e2e_tests`.
 That test generates assembly for every `tests/cases/e2e/*.tc` input, statically
-links an RV32 executable, runs it with `qemu-riscv32`, and checks its exit code.
+links both normal and `-opt` RV32 executables, runs them with `qemu-riscv32`, and
+checks their exit codes.
+
+The stage-two pipeline is `CFG -> SSA IR -> RISC-V MIR -> linear-scan register
+allocation -> frame lowering -> assembly`. Dumps are written to stderr, leaving
+stdout as valid assembly:
+
+```sh
+./build-wsl/compiler --dump-cfg --dump-ir --dump-mir \
+  --dump-mir-after-ra --verify-each < input.tc > output.s
+```
+
+Deterministic differential testing against GCC is available with:
+
+```sh
+./scripts/differential_test.sh \
+  --compiler ./build-wsl/compiler --seed-start 0 --count 100
+```
 
 ## Relative performance check
 

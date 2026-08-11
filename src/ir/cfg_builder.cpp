@@ -94,22 +94,23 @@ TacOp operation(BinaryOp op) {
 
 std::string_view tacName(TacOp op) {
     switch (op) {
-    case TacOp::LoadImm: return "imm"; case TacOp::ReadVar: return "read";
-    case TacOp::WriteVar: return "write"; case TacOp::Add: return "add";
+    case TacOp::Param: return "param"; case TacOp::LoadImm: return "imm";
+    case TacOp::Copy: return "copy"; case TacOp::Add: return "add";
     case TacOp::Sub: return "sub"; case TacOp::Mul: return "mul";
     case TacOp::Div: return "div"; case TacOp::Rem: return "rem";
     case TacOp::CmpLT: return "lt"; case TacOp::CmpGT: return "gt";
     case TacOp::CmpLE: return "le"; case TacOp::CmpGE: return "ge";
     case TacOp::CmpEQ: return "eq"; case TacOp::CmpNE: return "ne";
-    case TacOp::LogicalNot: return "not"; case TacOp::Call: return "call";
+    case TacOp::LogicalNot: return "not"; case TacOp::LoadGlobal: return "load_global";
+    case TacOp::StoreGlobal: return "store_global"; case TacOp::Call: return "call";
     }
     return "unknown";
 }
 
 } // namespace
 
-ModuleIR CFGBuilder::build(const CompUnit& unit) {
-    ModuleIR module;
+CFGModule CFGBuilder::build(const CompUnit& unit) {
+    CFGModule module;
     for (const auto& item : unit.items) {
         if (const auto* function = dynamic_cast<const FunctionDecl*>(item.get())) {
             module.functions.push_back({});
@@ -128,8 +129,18 @@ void CFGBuilder::buildFunction(const FunctionDecl& function) {
     function_->entry = createBlock();
     currentBlock_ = function_->entry;
     function_->localSymbols.clear();
-    for (const auto& symbol : semantic_.symbols)
-        if (symbol.owner && *symbol.owner == function_->function) function_->localSymbols.push_back(symbol.id);
+    localTemps_.assign(semantic_.symbols.size(), std::nullopt);
+    for (const auto& symbol : semantic_.symbols) {
+        if (symbol.owner && *symbol.owner == function_->function) {
+            function_->localSymbols.push_back(symbol.id);
+            if (!symbol.isConst) localTemps_[symbol.id] = createTemp();
+        }
+    }
+    const auto& parameters = semantic_.functions[function_->function].parameterSymbols;
+    for (std::size_t index = 0; index < parameters.size(); ++index) {
+        addInstruction(TacInst{TacOp::Param, localTemp(parameters[index]), {},
+                               static_cast<std::int32_t>(index), {}, {}, function.range.begin});
+    }
     emitStmt(*function.body);
     if (currentBlock_) {
         if (function.returnType == ValueType::Int)
@@ -140,11 +151,19 @@ void CFGBuilder::buildFunction(const FunctionDecl& function) {
 
 BlockId CFGBuilder::createBlock() {
     const BlockId id = static_cast<BlockId>(function_->blocks.size());
-    function_->blocks.push_back(BasicBlock{id});
+    CFGBlock block;
+    block.id = id;
+    function_->blocks.push_back(std::move(block));
     return id;
 }
 
 TempId CFGBuilder::createTemp() { return function_->tempCount++; }
+
+TempId CFGBuilder::localTemp(SymbolId symbol) const {
+    if (symbol >= localTemps_.size() || !localTemps_[symbol])
+        throw CompileError({}, "internal", "local symbol has no CFG temporary");
+    return *localTemps_[symbol];
+}
 
 void CFGBuilder::addInstruction(TacInst instruction) {
     if (!currentBlock_) throw CompileError(instruction.location, "internal", "instruction emitted without an active block");
@@ -186,11 +205,12 @@ std::optional<TempId> CFGBuilder::emitExpr(const Expr& expression) {
     }
     if (const auto* name = dynamic_cast<const NameExpr*>(&expression)) {
         const auto& symbol = semantic_.symbols[*name->resolvedSymbol];
+        if (!symbol.isConst && !symbol.isGlobal) return localTemp(symbol.id);
         const TempId dst = createTemp();
         if (symbol.isConst)
             addInstruction(TacInst{TacOp::LoadImm, dst, {}, symbol.constValue, {}, {}, expression.range.begin});
         else
-            addInstruction(TacInst{TacOp::ReadVar, dst, {}, {}, symbol.id, {}, expression.range.begin});
+            addInstruction(TacInst{TacOp::LoadGlobal, dst, {}, {}, symbol.id, {}, expression.range.begin});
         return dst;
     }
     if (const auto* unary = dynamic_cast<const UnaryExpr*>(&expression)) {
@@ -221,10 +241,14 @@ std::optional<TempId> CFGBuilder::emitExpr(const Expr& expression) {
             const BlockId mergeBlock = createBlock();
             emitCondition(expression, trueBlock, falseBlock);
             currentBlock_ = trueBlock;
-            addInstruction(TacInst{TacOp::LoadImm, result, {}, 1, {}, {}, expression.range.begin});
+            const TempId one = createTemp();
+            addInstruction(TacInst{TacOp::LoadImm, one, {}, 1, {}, {}, expression.range.begin});
+            addInstruction(TacInst{TacOp::Copy, result, {one}, {}, {}, {}, expression.range.begin});
             terminate(Jump{mergeBlock});
             currentBlock_ = falseBlock;
-            addInstruction(TacInst{TacOp::LoadImm, result, {}, 0, {}, {}, expression.range.begin});
+            const TempId zero = createTemp();
+            addInstruction(TacInst{TacOp::LoadImm, zero, {}, 0, {}, {}, expression.range.begin});
+            addInstruction(TacInst{TacOp::Copy, result, {zero}, {}, {}, {}, expression.range.begin});
             terminate(Jump{mergeBlock});
             currentBlock_ = mergeBlock;
             return result;
@@ -288,11 +312,19 @@ void CFGBuilder::emitStmt(const Stmt& statement) {
         (void)emitExpr(*expression->expr);
     } else if (const auto* assignment = dynamic_cast<const AssignStmt*>(&statement)) {
         const TempId value = requireValue(*assignment->value);
-        addInstruction(TacInst{TacOp::WriteVar, {}, {value}, {}, assignment->resolvedSymbol, {}, statement.range.begin});
+        const auto& symbol = semantic_.symbols[*assignment->resolvedSymbol];
+        if (symbol.isGlobal)
+            addInstruction(TacInst{TacOp::StoreGlobal, {}, {value}, {}, symbol.id, {}, statement.range.begin});
+        else
+            addInstruction(TacInst{TacOp::Copy, localTemp(symbol.id), {value}, {}, {}, {}, statement.range.begin});
     } else if (const auto* declaration = dynamic_cast<const DeclStmt*>(&statement)) {
         if (!declaration->declaration->isConst) {
             const TempId value = requireValue(*declaration->declaration->init);
-            addInstruction(TacInst{TacOp::WriteVar, {}, {value}, {}, declaration->declaration->resolvedSymbol, {}, statement.range.begin});
+            const auto& symbol = semantic_.symbols[*declaration->declaration->resolvedSymbol];
+            if (symbol.isGlobal)
+                addInstruction(TacInst{TacOp::StoreGlobal, {}, {value}, {}, symbol.id, {}, statement.range.begin});
+            else
+                addInstruction(TacInst{TacOp::Copy, localTemp(symbol.id), {value}, {}, {}, {}, statement.range.begin});
         }
     } else if (const auto* branch = dynamic_cast<const IfStmt*>(&statement)) {
         const BlockId thenBlock = createBlock();
@@ -333,7 +365,7 @@ void CFGBuilder::emitStmt(const Stmt& statement) {
     }
 }
 
-void printCfg(std::ostream& output, const ModuleIR& module, const SemanticResult& semantic) {
+void printCFG(std::ostream& output, const CFGModule& module, const SemanticResult& semantic) {
     for (const auto& function : module.functions) {
         output << "function @" << semantic.functions[function.function].name << ":\n";
         for (const auto& block : function.blocks) {
@@ -343,9 +375,9 @@ void printCfg(std::ostream& output, const ModuleIR& module, const SemanticResult
             for (const auto& instruction : block.instructions) {
                 output << "  "; if (instruction.dst) output << '%' << *instruction.dst << " = ";
                 output << tacName(instruction.op);
-                if (instruction.immediate) output << ' ' << *instruction.immediate;
-                if (instruction.symbol) output << " $" << *instruction.symbol;
-                if (instruction.callee) output << " @" << semantic.functions[*instruction.callee].name;
+                if (instruction.immediate.has_value()) output << ' ' << *instruction.immediate;
+                if (instruction.symbol.has_value()) output << " $" << *instruction.symbol;
+                if (instruction.callee.has_value()) output << " @" << semantic.functions[*instruction.callee].name;
                 for (const TempId input : instruction.inputs) output << " %" << input;
                 output << '\n';
             }

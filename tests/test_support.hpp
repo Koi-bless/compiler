@@ -5,11 +5,18 @@
 #include <stdexcept>
 #include <string>
 
-#include "toyc/frontend/ast.hpp"
+#include "toyc/backend/asm_printer.hpp"
+#include "toyc/backend/frame.hpp"
+#include "toyc/backend/isel.hpp"
+#include "toyc/backend/mir_verifier.hpp"
+#include "toyc/backend/phi_lowering.hpp"
+#include "toyc/backend/regalloc.hpp"
 #include "toyc/frontend/lexer.hpp"
 #include "toyc/frontend/parser.hpp"
 #include "toyc/frontend/semantic.hpp"
 #include "toyc/ir/cfg_builder.hpp"
+#include "toyc/ir/cfg_utils.hpp"
+#include "toyc/ir/ssa_builder.hpp"
 #include "toyc/ir/verifier.hpp"
 
 inline void check(bool condition, const std::string& message) {
@@ -20,15 +27,41 @@ struct TestPipeline {
     toyc::DiagnosticEngine diagnostics;
     std::unique_ptr<toyc::CompUnit> ast;
     toyc::SemanticResult semantic;
-    toyc::ModuleIR module;
+    toyc::CFGModule cfg;
+    toyc::IRModule ir;
+    toyc::MachineModule machine;
 
     explicit TestPipeline(const std::string& source) {
         toyc::Lexer lexer(source);
         toyc::Parser parser(lexer, diagnostics);
         ast = parser.parseCompUnit();
         semantic = toyc::SemanticAnalyzer(diagnostics).analyze(*ast);
-        module = toyc::CFGBuilder(semantic).build(*ast);
-        toyc::verify(module, semantic);
+        cfg = toyc::CFGBuilder(semantic).build(*ast);
+        toyc::removeUnreachable(cfg);
+        toyc::verifyCFG(cfg, semantic);
+        ir = toyc::SSABuilder(semantic).build(cfg);
+        toyc::verifyIR(ir, semantic);
+        machine = toyc::InstructionSelector(semantic).lower(ir);
+        toyc::resolveParallelCopies(machine);
+        toyc::verifyMIR(machine, toyc::MIRStage::PreRegisterAllocation);
+    }
+
+    toyc::MachineModule buildFinalMIR() const {
+        auto result = machine;
+        for (auto& function : result.functions) {
+            toyc::LinearScanRegisterAllocator().run(function);
+            toyc::verifyMIR(function, toyc::MIRStage::PostRegisterAllocation);
+            toyc::FrameLowering().run(function);
+            toyc::verifyMIR(function, toyc::MIRStage::AfterFrameLowering);
+        }
+        return result;
+    }
+
+    std::string emitAssembly() const {
+        auto final = buildFinalMIR();
+        std::ostringstream output;
+        toyc::AsmPrinter(output).print(final, semantic);
+        return output.str();
     }
 };
 

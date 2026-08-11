@@ -13,17 +13,19 @@ namespace toyc {
 class CFGBuilder {
 public:
     explicit CFGBuilder(const SemanticResult& semantic) : semantic_(semantic) {}
-    ModuleIR build(const CompUnit& unit);
+    CFGModule build(const CompUnit& unit);
 
 private:
     const SemanticResult& semantic_;
-    FunctionIR* function_ = nullptr;
+    CFGFunction* function_ = nullptr;
     std::optional<BlockId> currentBlock_;
     std::vector<std::pair<BlockId, BlockId>> loopTargets_;
+    std::vector<std::optional<TempId>> localTemps_;
 
     void buildFunction(const FunctionDecl& function);
     BlockId createBlock();
     TempId createTemp();
+    TempId localTemp(SymbolId symbol) const;
     void addInstruction(TacInst instruction);
     void terminate(Terminator terminator);
     std::optional<TempId> emitExpr(const Expr& expression);

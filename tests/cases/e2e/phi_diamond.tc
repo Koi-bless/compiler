@@ -1,0 +1,7 @@
+int choose(int c) {
+  int x = 1;
+  if (c) x = 4;
+  else x = 7;
+  return x;
+}
+int main() { return choose(1) + choose(0); }

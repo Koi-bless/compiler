@@ -14,7 +14,19 @@ add_library(toyc_lib
     src/frontend/parser.cpp
     src/frontend/semantic.cpp
     src/ir/cfg_builder.cpp
+    src/ir/cfg_utils.cpp
+    src/ir/dominator.cpp
+    src/ir/ssa_builder.cpp
+    src/ir/ir_printer.cpp
     src/ir/verifier.cpp
+    src/backend/mir.cpp
+    src/backend/mir_printer.cpp
+    src/backend/mir_verifier.cpp
+    src/backend/phi_lowering.cpp
+    src/backend/isel.cpp
+    src/backend/liveness.cpp
+    src/backend/regalloc.cpp
+    src/backend/frame.cpp
     src/backend/asm_printer.cpp)
 target_include_directories(toyc_lib PUBLIC include)
 target_compile_options(toyc_lib PRIVATE

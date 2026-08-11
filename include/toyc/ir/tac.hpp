@@ -10,10 +10,12 @@
 namespace toyc {
 
 enum class TacOp {
-    LoadImm, ReadVar, WriteVar,
+    Param, LoadImm, Copy,
     Add, Sub, Mul, Div, Rem,
     CmpLT, CmpGT, CmpLE, CmpGE, CmpEQ, CmpNE,
-    LogicalNot, Call
+    LogicalNot,
+    LoadGlobal, StoreGlobal,
+    Call
 };
 
 struct TacInst {

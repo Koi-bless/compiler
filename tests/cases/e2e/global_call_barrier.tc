@@ -1,0 +1,7 @@
+int state = 3;
+void bump() { state = state + 4; return; }
+int main() {
+  int before = state;
+  bump();
+  return before * 10 + state;
+}

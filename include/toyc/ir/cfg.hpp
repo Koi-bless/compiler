@@ -18,7 +18,7 @@ struct Return { std::optional<TempId> value; };
 struct Unreachable {};
 using Terminator = std::variant<Jump, Branch, Return, Unreachable>;
 
-struct BasicBlock {
+struct CFGBlock {
     BlockId id{};
     std::vector<TacInst> instructions;
     std::optional<Terminator> terminator;
@@ -26,19 +26,19 @@ struct BasicBlock {
     std::vector<BlockId> successors;
 };
 
-struct FunctionIR {
+struct CFGFunction {
     FuncId function{};
     ValueType returnType = ValueType::Void;
     BlockId entry{};
-    std::vector<BasicBlock> blocks;
+    std::vector<CFGBlock> blocks;
     std::vector<SymbolId> localSymbols;
     TempId tempCount{};
     SourceLocation location{};
 };
 
-struct ModuleIR { std::vector<FunctionIR> functions; };
+struct CFGModule { std::vector<CFGFunction> functions; };
 
-void printCfg(std::ostream& output, const ModuleIR& module,
+void printCFG(std::ostream& output, const CFGModule& module,
               const SemanticResult& semantic);
 
 } // namespace toyc

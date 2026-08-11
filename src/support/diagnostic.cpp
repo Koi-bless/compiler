@@ -17,7 +17,7 @@ std::string formatDiagnostic(SourceLocation location, std::string_view category,
 CompileError::CompileError(SourceLocation location, std::string_view category,
                            std::string_view message)
     : std::runtime_error(formatDiagnostic(location, category, message)),
-      location_(location) {}
+      location_(location), category_(category) {}
 
 [[noreturn]] void DiagnosticEngine::fail(SourceLocation location,
                                           std::string_view category,

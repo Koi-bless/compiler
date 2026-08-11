@@ -13,9 +13,11 @@ public:
     CompileError(SourceLocation location, std::string_view category,
                  std::string_view message);
     [[nodiscard]] SourceLocation location() const noexcept { return location_; }
+    [[nodiscard]] const std::string& category() const noexcept { return category_; }
 
 private:
     SourceLocation location_;
+    std::string category_;
 };
 
 class DiagnosticEngine {
