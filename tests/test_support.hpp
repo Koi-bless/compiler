@@ -8,6 +8,8 @@
 #include "toyc/backend/asm_printer.hpp"
 #include "toyc/backend/frame.hpp"
 #include "toyc/backend/isel.hpp"
+#include "toyc/backend/machine_combine.hpp"
+#include "toyc/backend/machine_peephole.hpp"
 #include "toyc/backend/mir_verifier.hpp"
 #include "toyc/backend/phi_lowering.hpp"
 #include "toyc/backend/regalloc.hpp"
@@ -49,9 +51,15 @@ struct TestPipeline {
         options.verifyEach = true;
         std::ostringstream diagnosticsOutput;
         toyc::runOptimizationPipeline(ir, semantic, options, diagnosticsOutput);
-        machine = toyc::InstructionSelector(
-            semantic, toyc::ISelOptions{optimize}).lower(ir);
+        toyc::ISelOptions iselOptions;
+        iselOptions.fuseCompareBranches = optimize;
+        iselOptions.selectImmediates = optimize;
+        iselOptions.strengthReducePowerOfTwoMultiply = optimize;
+        machine = toyc::InstructionSelector(semantic, iselOptions).lower(ir);
         toyc::resolveParallelCopies(machine);
+        if (optimize)
+            for (auto& function : machine.functions)
+                toyc::runPreRAMachineCombine(function);
         toyc::verifyMIR(machine, toyc::MIRStage::PreRegisterAllocation);
     }
 
@@ -60,6 +68,7 @@ struct TestPipeline {
         for (auto& function : result.functions) {
             toyc::LinearScanRegisterAllocator(
                 toyc::RegAllocOptions{optimized, optimized}).run(function);
+            if (optimized) toyc::runPostRAPeephole(function);
             toyc::verifyMIR(function, toyc::MIRStage::PostRegisterAllocation);
             toyc::FrameLowering().run(function);
             toyc::verifyMIR(function, toyc::MIRStage::AfterFrameLowering);
@@ -70,7 +79,9 @@ struct TestPipeline {
     std::string emitAssembly() const {
         auto final = buildFinalMIR();
         std::ostringstream output;
-        toyc::AsmPrinter(output).print(final, semantic);
+        toyc::AsmPrinterOptions asmOptions;
+        asmOptions.enableFallthrough = optimized;
+        toyc::AsmPrinter(output, asmOptions).print(final, semantic);
         return output.str();
     }
 };

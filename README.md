@@ -41,7 +41,10 @@ checks their exit codes.
 The default pipeline canonicalizes SSA and conservatively removes dead
 instructions. `-opt` enables LocalDAG/InstCombine, SCCP, CFG simplification,
 DCE, dominator-scoped GVN, conservative LICM, compare-branch fusion, copy-aware
-linear scan, and spilled-constant rematerialization. Dumps and statistics are
+linear scan, spilled-constant rematerialization, immediate-aware `addi`/`slli`
+selection, zero-register comparisons, pre-RA machine combine/DCE, post-RA
+physical-register and spill-slot peepholes, and adjacent-block fall-through.
+Dumps and statistics are
 written to stderr, leaving stdout as valid assembly:
 
 ```sh
@@ -59,6 +62,12 @@ Inspect and verify the optimized pipeline with:
 
 `--dump-ir-before-opt` shows freshly constructed SSA, `--dump-ir-after-each`
 adds a stable boundary after every pass, and `--dump-ir` shows final SSA.
+`--dump-mir` is after phi-copy resolution and pre-RA machine optimization;
+`--dump-mir-after-ra` is after register allocation and the post-RA peephole but
+before frame lowering. Machine pass hit counts are included in
+`--print-pass-stats` output. The default mode leaves all new machine-level
+transformations and assembly fall-through emission disabled for stable A/B
+comparison.
 
 Deterministic differential testing against GCC is available with:
 

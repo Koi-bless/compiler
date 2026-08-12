@@ -7,6 +7,8 @@
 #include "toyc/backend/asm_printer.hpp"
 #include "toyc/backend/frame.hpp"
 #include "toyc/backend/isel.hpp"
+#include "toyc/backend/machine_combine.hpp"
+#include "toyc/backend/machine_peephole.hpp"
 #include "toyc/backend/mir_printer.hpp"
 #include "toyc/backend/mir_verifier.hpp"
 #include "toyc/backend/phi_lowering.hpp"
@@ -108,8 +110,23 @@ int main(int argc, char** argv) {
         if (options.dumpIr) toyc::printIR(std::cerr, ir, semantic);
         toyc::ISelOptions iselOptions;
         iselOptions.fuseCompareBranches = options.optimize;
+        iselOptions.selectImmediates = options.optimize;
+        iselOptions.strengthReducePowerOfTwoMultiply = options.optimize;
         auto machine = toyc::InstructionSelector(semantic, iselOptions).lower(ir);
         toyc::resolveParallelCopies(machine);
+        if (options.optimize) {
+            for (auto& function : machine.functions) {
+                const auto result = toyc::runPreRAMachineCombine(function);
+                if (verifyIntermediate)
+                    toyc::verifyMIR(function, toyc::MIRStage::PreRegisterAllocation);
+                if (options.printPassStats)
+                    std::cerr << "machine-pass MachineCombine @"
+                              << semantic.functions[function.function].name
+                              << ": changed=" << result.changed
+                              << ", rewritten=" << result.instructionsRewritten
+                              << ", removed=" << result.instructionsRemoved << '\n';
+            }
+        }
         if (verifyIntermediate) toyc::verifyMIR(machine, toyc::MIRStage::PreRegisterAllocation);
         if (options.dumpMir) toyc::printMIR(std::cerr, machine, semantic);
         for (auto& function : machine.functions) {
@@ -117,6 +134,18 @@ int main(int argc, char** argv) {
             registerOptions.enableCopyHints = options.optimize;
             registerOptions.enableRematerialization = options.optimize;
             toyc::LinearScanRegisterAllocator(registerOptions).run(function);
+            if (options.optimize) {
+                const auto result = toyc::runPostRAPeephole(function);
+                if (verifyIntermediate)
+                    toyc::verifyMIR(function, toyc::MIRStage::PostRegisterAllocation);
+                if (options.printPassStats)
+                    std::cerr << "machine-pass PostRAPeephole @"
+                              << semantic.functions[function.function].name
+                              << ": changed=" << result.changed
+                              << ", removed=" << result.instructionsRemoved
+                              << ", loads_forwarded=" << result.loadsForwarded
+                              << ", stores_removed=" << result.storesRemoved << '\n';
+            }
             if (verifyIntermediate) toyc::verifyMIR(function, toyc::MIRStage::PostRegisterAllocation);
         }
         if (options.dumpMirAfterRA) toyc::printMIR(std::cerr, machine, semantic);
@@ -124,7 +153,9 @@ int main(int argc, char** argv) {
             toyc::FrameLowering().run(function);
             toyc::verifyMIR(function, toyc::MIRStage::AfterFrameLowering);
         }
-        toyc::AsmPrinter(std::cout).print(machine, semantic);
+        toyc::AsmPrinterOptions asmOptions;
+        asmOptions.enableFallthrough = options.optimize;
+        toyc::AsmPrinter(std::cout, asmOptions).print(machine, semantic);
         return 0;
     } catch (const toyc::CompileError& error) {
         std::cerr << error.what() << '\n';

@@ -3,7 +3,11 @@
 #include "toyc/frontend/semantic.hpp"
 #include "toyc/ir/ir.hpp"
 namespace toyc {
-struct ISelOptions { bool fuseCompareBranches = false; };
+struct ISelOptions {
+    bool fuseCompareBranches = false;
+    bool selectImmediates = false;
+    bool strengthReducePowerOfTwoMultiply = false;
+};
 class InstructionSelector {
 public:
     explicit InstructionSelector(const SemanticResult& semantic,

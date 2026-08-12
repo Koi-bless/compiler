@@ -31,7 +31,7 @@ using RegMask = std::set<PhysReg>;
 
 enum class MOpcode {
     LI, LA, COPY,
-    ADD, ADDI, SUB, MUL, DIV, REM,
+    ADD, ADDI, SUB, MUL, DIV, REM, SLLI,
     SLT, SLTU, XOR, XORI, SLTIU,
     LW, SW, CALL, BRCOND, BEQ, BNE, BLT, BGE, JUMP, RET, PARALLEL_COPY
 };

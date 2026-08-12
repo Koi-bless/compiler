@@ -22,6 +22,92 @@ bool terminator(MOpcode opcode) {
            opcode == MOpcode::BGE || opcode == MOpcode::JUMP || opcode == MOpcode::RET;
 }
 
+bool isRegister(const MOperand& operand) {
+    return std::holds_alternative<VirtualReg>(operand) ||
+           std::holds_alternative<PhysReg>(operand);
+}
+
+void require(const MachineFunction& function, MIRStage stage, bool condition,
+             const std::string& message) {
+    if (!condition) invalid(function, stage, message);
+}
+
+void checkInstructionShape(const MachineFunction& function, MIRStage stage,
+                           const MInstruction& instruction) {
+    const auto oneRegisterDef = [&] {
+        return instruction.defs.size() == 1 && isRegister(instruction.defs[0]);
+    };
+    const auto registerBinary = [&] {
+        return oneRegisterDef() && instruction.uses.size() == 2 &&
+               isRegister(instruction.uses[0]) && isRegister(instruction.uses[1]);
+    };
+    switch (instruction.opcode) {
+    case MOpcode::LI:
+        require(function, stage, oneRegisterDef() && instruction.uses.size() == 1 &&
+                std::holds_alternative<Immediate>(instruction.uses[0]),
+                "LI operand shape mismatch");
+        break;
+    case MOpcode::LA:
+        require(function, stage, oneRegisterDef() && instruction.uses.size() == 1 &&
+                std::holds_alternative<GlobalRef>(instruction.uses[0]),
+                "LA operand shape mismatch");
+        break;
+    case MOpcode::COPY:
+        require(function, stage, oneRegisterDef() && instruction.uses.size() == 1 &&
+                isRegister(instruction.uses[0]), "COPY operand shape mismatch");
+        break;
+    case MOpcode::ADD: case MOpcode::SUB: case MOpcode::MUL:
+    case MOpcode::DIV: case MOpcode::REM: case MOpcode::SLT:
+    case MOpcode::SLTU: case MOpcode::XOR:
+        require(function, stage, registerBinary(), "register binary operand shape mismatch");
+        break;
+    case MOpcode::ADDI: case MOpcode::XORI: case MOpcode::SLTIU:
+        require(function, stage, oneRegisterDef() && instruction.uses.size() == 2 &&
+                isRegister(instruction.uses[0]) &&
+                std::holds_alternative<Immediate>(instruction.uses[1]),
+                "immediate binary operand shape mismatch");
+        if (instruction.uses.size() == 2 && std::holds_alternative<Immediate>(instruction.uses[1]))
+            require(function, stage,
+                    riscv32::fitsImmediate(std::get<Immediate>(instruction.uses[1]).value),
+                    "out-of-range signed 12-bit immediate");
+        break;
+    case MOpcode::SLLI:
+        require(function, stage, oneRegisterDef() && instruction.uses.size() == 2 &&
+                isRegister(instruction.uses[0]) &&
+                std::holds_alternative<Immediate>(instruction.uses[1]),
+                "SLLI operand shape mismatch");
+        if (instruction.uses.size() == 2 && std::holds_alternative<Immediate>(instruction.uses[1]))
+            require(function, stage,
+                    riscv32::fitsShiftAmount(std::get<Immediate>(instruction.uses[1]).value),
+                    "out-of-range shift amount");
+        break;
+    case MOpcode::LW: {
+        const bool stackForm = instruction.uses.size() == 1 &&
+                               std::holds_alternative<StackSlot>(instruction.uses[0]);
+        const bool addressForm = instruction.uses.size() == 2 &&
+                                 isRegister(instruction.uses[0]) &&
+                                 std::holds_alternative<Immediate>(instruction.uses[1]);
+        require(function, stage, oneRegisterDef() && (stackForm || addressForm),
+                "LW operand shape mismatch");
+        break;
+    }
+    case MOpcode::SW: {
+        const bool stackForm = instruction.uses.size() == 2 &&
+                               isRegister(instruction.uses[0]) &&
+                               std::holds_alternative<StackSlot>(instruction.uses[1]);
+        const bool addressForm = instruction.uses.size() == 3 &&
+                                 isRegister(instruction.uses[0]) &&
+                                 isRegister(instruction.uses[1]) &&
+                                 std::holds_alternative<Immediate>(instruction.uses[2]);
+        require(function, stage, instruction.defs.empty() &&
+                (stackForm || addressForm), "SW operand shape mismatch");
+        break;
+    }
+    default:
+        break;
+    }
+}
+
 void checkOperand(const MachineFunction& function, MIRStage stage, const MOperand& operand) {
     if (const auto* reg = std::get_if<VirtualReg>(&operand)) {
         if (reg->id >= function.vregCount) invalid(function, stage, "virtual register is out of range");
@@ -48,6 +134,7 @@ void verifyMIR(const MachineFunction& function, MIRStage stage) {
             const auto& instruction = block.instructions[index];
             if (terminator(instruction.opcode) && index + 1 != block.instructions.size()) invalid(function, stage, "terminator is not last");
             if (instruction.opcode == MOpcode::PARALLEL_COPY) invalid(function, stage, "unresolved parallel copy");
+            checkInstructionShape(function, stage, instruction);
             for (const auto& operand : instruction.defs) {
                 checkOperand(function, stage, operand);
                 if (const auto* reg = std::get_if<VirtualReg>(&operand)) definitions.insert(reg->id);
@@ -63,7 +150,14 @@ void verifyMIR(const MachineFunction& function, MIRStage stage) {
                          PhysReg::A4, PhysReg::A5, PhysReg::A6, PhysReg::A7})
                     if (!instruction.implicitDefs.contains(reg)) invalid(function, stage, "call clobber mask is incomplete");
             }
-            if (instruction.opcode == MOpcode::BRCOND && instruction.uses.size() != 3) invalid(function, stage, "conditional branch operand count mismatch");
+            if (instruction.opcode == MOpcode::BRCOND) {
+                if (instruction.uses.size() != 3) invalid(function, stage, "conditional branch operand count mismatch");
+                if (instruction.uses.size() == 3 &&
+                    (!isRegister(instruction.uses[0]) ||
+                     !std::holds_alternative<MachineBlockRef>(instruction.uses[1]) ||
+                     !std::holds_alternative<MachineBlockRef>(instruction.uses[2])))
+                    invalid(function, stage, "conditional branch operand shape mismatch");
+            }
             if ((instruction.opcode == MOpcode::BEQ || instruction.opcode == MOpcode::BNE ||
                  instruction.opcode == MOpcode::BLT || instruction.opcode == MOpcode::BGE)) {
                 if (instruction.uses.size() != 4)
@@ -79,7 +173,10 @@ void verifyMIR(const MachineFunction& function, MIRStage stage) {
                     } else if (!std::holds_alternative<PhysReg>(instruction.uses[operand]))
                         invalid(function, stage, "fused branch retains a virtual comparison operand");
             }
-            if (instruction.opcode == MOpcode::JUMP && instruction.uses.size() != 1) invalid(function, stage, "jump operand count mismatch");
+            if (instruction.opcode == MOpcode::JUMP &&
+                (instruction.uses.size() != 1 ||
+                 !std::holds_alternative<MachineBlockRef>(instruction.uses[0])))
+                invalid(function, stage, "jump operand shape mismatch");
             if (stage == MIRStage::AfterFrameLowering &&
                 (instruction.opcode == MOpcode::ADDI || instruction.opcode == MOpcode::LW || instruction.opcode == MOpcode::SW))
                 for (const auto& operand : instruction.uses) if (const auto* immediate = std::get_if<Immediate>(&operand))

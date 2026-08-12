@@ -7,13 +7,19 @@
 
 namespace toyc {
 
+struct AsmPrinterOptions {
+    bool enableFallthrough = false;
+};
+
 class AsmPrinter {
 public:
-    explicit AsmPrinter(std::ostream& output) : output_(output) {}
+    explicit AsmPrinter(std::ostream& output, AsmPrinterOptions options = {})
+        : output_(output), options_(options) {}
     void print(const MachineModule& module, const SemanticResult& semantic);
 
 private:
     std::ostream& output_;
+    AsmPrinterOptions options_;
 };
 
 } // namespace toyc

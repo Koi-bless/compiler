@@ -34,6 +34,8 @@ add_library(toyc_lib
     src/backend/mir_verifier.cpp
     src/backend/phi_lowering.cpp
     src/backend/isel.cpp
+    src/backend/machine_combine.cpp
+    src/backend/machine_peephole.cpp
     src/backend/liveness.cpp
     src/backend/regalloc.cpp
     src/backend/frame.cpp

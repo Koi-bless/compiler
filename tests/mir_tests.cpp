@@ -32,4 +32,26 @@ int main() {
         }
     check(damaged, "test MIR lacks call to damage");
     expectCompileError([&] { toyc::verifyMIR(broken, toyc::MIRStage::PreRegisterAllocation); }, "clobber mask");
+
+    const auto shiftFunction = [](std::int32_t amount) {
+        toyc::MachineFunction function;
+        function.blocks.resize(1);
+        function.blocks[0].id = 0;
+        function.blocks[0].instructions = {
+            {toyc::MOpcode::SLLI, {toyc::PhysReg::T0},
+             {toyc::PhysReg::T1, toyc::Immediate{amount}}, {}, {}, {}},
+            {toyc::MOpcode::RET, {}, {}, {}, {}, {}}
+        };
+        return function;
+    };
+    auto shift0 = shiftFunction(0);
+    auto shift31 = shiftFunction(31);
+    toyc::verifyMIR(shift0, toyc::MIRStage::PreRegisterAllocation);
+    toyc::verifyMIR(shift31, toyc::MIRStage::PreRegisterAllocation);
+    auto shiftNegative = shiftFunction(-1);
+    auto shift32 = shiftFunction(32);
+    expectCompileError([&] { toyc::verifyMIR(shiftNegative, toyc::MIRStage::PreRegisterAllocation); },
+                       "shift amount");
+    expectCompileError([&] { toyc::verifyMIR(shift32, toyc::MIRStage::PreRegisterAllocation); },
+                       "shift amount");
 }
