@@ -52,4 +52,31 @@ int main() {
             return instruction.opcode == toyc::MOpcode::COPY;
         });
     check(copyCount == 1, "copy hint did not eliminate a safe virtual copy");
+
+    std::string spillPressure = "int bump(int x){return x*3+1;}int main(){";
+    for (int index = 0; index < 16; ++index)
+        spillPressure += "int v" + std::to_string(index) + "=" +
+                         std::to_string(index + 1) + ";";
+    spillPressure += "int i=0;while(i<7){i=i+1;";
+    for (int index = 0; index < 16; ++index)
+        spillPressure += "v" + std::to_string(index) + "=v" +
+                         std::to_string(index) + "+i+" +
+                         std::to_string(index % 3) + ";";
+    spillPressure += "v0=bump(v0);}return v0";
+    for (int index = 1; index < 16; ++index)
+        spillPressure += "+v" + std::to_string(index);
+    spillPressure += ";}";
+    TestPipeline pressurePipeline(spillPressure, true);
+    auto pressureFunction = pressurePipeline.machine.functions[1];
+    toyc::LinearScanRegisterAllocator(toyc::RegAllocOptions{true, true})
+        .run(pressureFunction);
+    for (const auto& block : pressureFunction.blocks)
+        for (const auto& instruction : block.instructions) {
+            for (const auto& operand : instruction.defs)
+                check(!std::holds_alternative<toyc::VirtualReg>(operand),
+                      "three-way spill left a virtual definition");
+            for (const auto& operand : instruction.uses)
+                check(!std::holds_alternative<toyc::VirtualReg>(operand),
+                      "three-way spill left a virtual use");
+        }
 }

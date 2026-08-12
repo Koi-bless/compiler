@@ -107,11 +107,17 @@ AllocationResult LinearScanRegisterAllocator::run(MachineFunction& function) con
             if (discardRematerializedDefinition) continue;
             std::map<VRegId, PhysReg> scratchFor;
             std::vector<MInstruction> before, after;
-            const auto scratch = [&](VRegId id) {
+            const auto scratch = [&](VRegId id, bool mayReuseInput = false) {
                 if (const auto found = scratchFor.find(id); found != scratchFor.end()) return found->second;
-                if (scratchFor.size() >= 2)
+                if (scratchFor.size() >= 2) {
+                    if (mayReuseInput && instruction.defs.size() == 1) {
+                        const PhysReg reg = scratchFor.begin()->second;
+                        scratchFor[id] = reg;
+                        return reg;
+                    }
                     throw CompileError(function.location, "register allocation",
                                        "instruction needs more than two spill scratch registers");
+                }
                 const PhysReg reg = scratchFor.size() % 2 == 0 ? PhysReg::T5 : PhysReg::T6;
                 scratchFor[id] = reg; return reg;
             };
@@ -132,7 +138,9 @@ AllocationResult LinearScanRegisterAllocator::run(MachineFunction& function) con
                 const VRegId id = virtualReg->id;
                 if (result.registers[id]) operand = *result.registers[id];
                 else {
-                    const PhysReg reg = scratch(id);
+                    // A single destination may reuse an input scratch: RV32 reads
+                    // both source operands before writing the destination.
+                    const PhysReg reg = scratch(id, true);
                     operand = reg;
                     if (result.spillSlots[id])
                         after.push_back({MOpcode::SW, {}, {reg, *result.spillSlots[id]}, {}, {}, instruction.location});
