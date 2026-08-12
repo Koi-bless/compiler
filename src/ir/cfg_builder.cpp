@@ -308,12 +308,20 @@ void CFGBuilder::emitCondition(const Expr& expression, BlockId trueBlock, BlockI
         if (binary->op == BinaryOp::LogicalAnd) {
             const BlockId rhs = createBlock();
             emitCondition(*binary->lhs, rhs, falseBlock);
-            currentBlock_ = rhs; emitCondition(*binary->rhs, trueBlock, falseBlock); return;
+            currentBlock_ = function_->blocks[rhs].predecessors.empty()
+                                ? std::optional<BlockId>{}
+                                : std::optional<BlockId>{rhs};
+            if (currentBlock_) emitCondition(*binary->rhs, trueBlock, falseBlock);
+            return;
         }
         if (binary->op == BinaryOp::LogicalOr) {
             const BlockId rhs = createBlock();
             emitCondition(*binary->lhs, trueBlock, rhs);
-            currentBlock_ = rhs; emitCondition(*binary->rhs, trueBlock, falseBlock); return;
+            currentBlock_ = function_->blocks[rhs].predecessors.empty()
+                                ? std::optional<BlockId>{}
+                                : std::optional<BlockId>{rhs};
+            if (currentBlock_) emitCondition(*binary->rhs, trueBlock, falseBlock);
+            return;
         }
     }
     terminate(Branch{requireValue(expression), trueBlock, falseBlock});

@@ -15,6 +15,14 @@ int main() {
     TestPipeline foldedReturn("int main(){if(1==1)return 1;}");
     check(!foldedReturn.cfg.functions.empty(), "constant expression return path was rejected");
 
+    TestPipeline shortCircuitReturn(
+        "int side(){return 0;}int main(){if((0&&side())||(1||side()))return 7;}");
+    std::ostringstream shortCircuitOutput;
+    toyc::printCFG(shortCircuitOutput, shortCircuitReturn.cfg,
+                   shortCircuitReturn.semantic);
+    check(shortCircuitOutput.str().find("call @side") == std::string::npos,
+          "unreachable short-circuit RHS was lowered");
+
     TestPipeline globalInit("int seed=3;int next(){seed=seed+4;return seed;}int value=next();int main(){return value+seed;}");
     std::ostringstream globalInitOutput;
     toyc::printCFG(globalInitOutput, globalInit.cfg, globalInit.semantic);
