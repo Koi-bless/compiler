@@ -18,6 +18,7 @@
 #include "toyc/ir/cfg_utils.hpp"
 #include "toyc/ir/ssa_builder.hpp"
 #include "toyc/ir/verifier.hpp"
+#include "toyc/opt/pipeline.hpp"
 
 inline void check(bool condition, const std::string& message) {
     if (!condition) throw std::runtime_error(message);
@@ -30,8 +31,10 @@ struct TestPipeline {
     toyc::CFGModule cfg;
     toyc::IRModule ir;
     toyc::MachineModule machine;
+    bool optimized = false;
 
-    explicit TestPipeline(const std::string& source) {
+    explicit TestPipeline(const std::string& source, bool optimize = false)
+        : optimized(optimize) {
         toyc::Lexer lexer(source);
         toyc::Parser parser(lexer, diagnostics);
         ast = parser.parseCompUnit();
@@ -41,7 +44,13 @@ struct TestPipeline {
         toyc::verifyCFG(cfg, semantic);
         ir = toyc::SSABuilder(semantic).build(cfg);
         toyc::verifyIR(ir, semantic);
-        machine = toyc::InstructionSelector(semantic).lower(ir);
+        toyc::OptimizationOptions options;
+        options.enabled = optimize;
+        options.verifyEach = true;
+        std::ostringstream diagnosticsOutput;
+        toyc::runOptimizationPipeline(ir, semantic, options, diagnosticsOutput);
+        machine = toyc::InstructionSelector(
+            semantic, toyc::ISelOptions{optimize}).lower(ir);
         toyc::resolveParallelCopies(machine);
         toyc::verifyMIR(machine, toyc::MIRStage::PreRegisterAllocation);
     }
@@ -49,7 +58,8 @@ struct TestPipeline {
     toyc::MachineModule buildFinalMIR() const {
         auto result = machine;
         for (auto& function : result.functions) {
-            toyc::LinearScanRegisterAllocator().run(function);
+            toyc::LinearScanRegisterAllocator(
+                toyc::RegAllocOptions{optimized, optimized}).run(function);
             toyc::verifyMIR(function, toyc::MIRStage::PostRegisterAllocation);
             toyc::FrameLowering().run(function);
             toyc::verifyMIR(function, toyc::MIRStage::AfterFrameLowering);

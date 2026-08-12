@@ -5,6 +5,7 @@
 #include <utility>
 
 #include "toyc/backend/phi_lowering.hpp"
+#include "toyc/opt/ir_utils.hpp"
 #include "toyc/support/diagnostic.hpp"
 
 namespace toyc {
@@ -25,7 +26,11 @@ MInstruction binary(MOpcode opcode, MOperand destination, MOperand left,
     return MInstruction{opcode, {destination}, {left, right}, {}, {}, location};
 }
 
-MachineFunction lowerFunction(const IRFunction& ir) {
+bool isCompare(IROp op) {
+    return op >= IROp::ICmpLT && op <= IROp::ICmpNE;
+}
+
+MachineFunction lowerFunction(const IRFunction& ir, bool fuseCompareBranches) {
     MachineFunction machine;
     machine.function = ir.function;
     machine.entry = ir.entry;
@@ -38,6 +43,23 @@ MachineFunction lowerFunction(const IRFunction& ir) {
         machine.blocks[block.id].successors.assign(block.successors.begin(), block.successors.end());
     }
     std::vector<std::vector<std::pair<VirtualReg, VirtualReg>>> edgeCopies(ir.blocks.size());
+    std::vector<bool> fused(ir.valueCount, false);
+    std::vector<BlockId> definitionBlocks(ir.valueCount, ir.entry);
+    for (const auto& block : ir.blocks)
+        for (const auto& instruction : block.instructions)
+            if (instruction.result) definitionBlocks[*instruction.result] = block.id;
+    if (fuseCompareBranches) {
+        const auto uses = buildUseLists(ir);
+        for (const auto& block : ir.blocks) {
+            const auto* branch = std::get_if<BranchValue>(&*block.terminator);
+            if (!branch || uses[branch->condition].size() != 1 ||
+                !uses[branch->condition][0].terminator ||
+                definitionBlocks[branch->condition] != block.id)
+                continue;
+            const auto* definition = findDefinition(ir, branch->condition);
+            if (definition && isCompare(definition->op)) fused[branch->condition] = true;
+        }
+    }
     for (const auto& block : ir.blocks) for (const auto& instruction : block.instructions) {
         if (instruction.op != IROp::Phi) break;
         for (const auto& input : instruction.phiInputs)
@@ -48,6 +70,7 @@ MachineFunction lowerFunction(const IRFunction& ir) {
         auto& output = machine.blocks[block.id].instructions;
         for (const auto& instruction : block.instructions) {
             if (instruction.op == IROp::Phi) continue;
+            if (instruction.result && fused[*instruction.result]) continue;
             const auto destination = [&]() -> MOperand { return vreg(*instruction.result); };
             const auto operand = [&](std::size_t index) -> MOperand { return vreg(instruction.operands[index]); };
             switch (instruction.op) {
@@ -122,8 +145,28 @@ MachineFunction lowerFunction(const IRFunction& ir) {
         }
         if (const auto* jump = std::get_if<IRJump>(&*block.terminator))
             output.push_back({MOpcode::JUMP, {}, {MachineBlockRef{jump->target}}, {}, {}, {}});
-        else if (const auto* branch = std::get_if<BranchValue>(&*block.terminator))
-            output.push_back({MOpcode::BRCOND, {}, {vreg(branch->condition), MachineBlockRef{branch->trueTarget}, MachineBlockRef{branch->falseTarget}}, {}, {}, {}});
+        else if (const auto* branch = std::get_if<BranchValue>(&*block.terminator)) {
+            if (!fused[branch->condition]) {
+                output.push_back({MOpcode::BRCOND, {}, {vreg(branch->condition), MachineBlockRef{branch->trueTarget}, MachineBlockRef{branch->falseTarget}}, {}, {}, {}});
+            } else {
+                const auto* comparison = findDefinition(ir, branch->condition);
+                MOpcode opcode = MOpcode::BEQ;
+                ValueId lhs = comparison->operands[0];
+                ValueId rhs = comparison->operands[1];
+                switch (comparison->op) {
+                case IROp::ICmpEQ: opcode = MOpcode::BEQ; break;
+                case IROp::ICmpNE: opcode = MOpcode::BNE; break;
+                case IROp::ICmpLT: opcode = MOpcode::BLT; break;
+                case IROp::ICmpGE: opcode = MOpcode::BGE; break;
+                case IROp::ICmpGT: opcode = MOpcode::BLT; std::swap(lhs, rhs); break;
+                case IROp::ICmpLE: opcode = MOpcode::BGE; std::swap(lhs, rhs); break;
+                default: break;
+                }
+                output.push_back({opcode, {}, {vreg(lhs), vreg(rhs),
+                    MachineBlockRef{branch->trueTarget}, MachineBlockRef{branch->falseTarget}},
+                    {}, {}, comparison->location});
+            }
+        }
         else if (const auto* ret = std::get_if<ReturnValue>(&*block.terminator)) {
             if (ret->value) output.push_back({MOpcode::COPY, {PhysReg::A0}, {vreg(*ret->value)}, {}, {}, {}});
         }
@@ -147,7 +190,8 @@ MachineModule InstructionSelector::lower(const IRModule& input) const {
     splitCriticalEdges(ir);
     MachineModule result;
     (void)semantic_;
-    for (const auto& function : ir.functions) result.functions.push_back(lowerFunction(function));
+    for (const auto& function : ir.functions)
+        result.functions.push_back(lowerFunction(function, options_.fuseCompareBranches));
     return result;
 }
 

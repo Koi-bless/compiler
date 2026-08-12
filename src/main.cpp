@@ -20,6 +20,7 @@
 #include "toyc/ir/ir_printer.hpp"
 #include "toyc/ir/ssa_builder.hpp"
 #include "toyc/ir/verifier.hpp"
+#include "toyc/opt/pipeline.hpp"
 #include "toyc/support/diagnostic.hpp"
 
 namespace {
@@ -31,6 +32,9 @@ struct CompilerOptions {
     bool dumpAst = false;
     bool dumpCfg = false;
     bool dumpIr = false;
+    bool dumpIrBeforeOpt = false;
+    bool dumpIrAfterEach = false;
+    bool printPassStats = false;
     bool dumpMir = false;
     bool dumpMirAfterRA = false;
 };
@@ -45,6 +49,9 @@ CompilerOptions parseOptions(int argc, char** argv) {
         else if (argument == "--dump-ast") options.dumpAst = true;
         else if (argument == "--dump-cfg") options.dumpCfg = true;
         else if (argument == "--dump-ir") options.dumpIr = true;
+        else if (argument == "--dump-ir-before-opt") options.dumpIrBeforeOpt = true;
+        else if (argument == "--dump-ir-after-each") options.dumpIrAfterEach = true;
+        else if (argument == "--print-pass-stats") options.printPassStats = true;
         else if (argument == "--dump-mir") options.dumpMir = true;
         else if (argument == "--dump-mir-after-ra") options.dumpMirAfterRA = true;
         else throw toyc::CompileError({}, "command line", "unknown option '" + std::string(argument) + "'");
@@ -90,13 +97,26 @@ int main(int argc, char** argv) {
         if (options.dumpCfg) toyc::printCFG(std::cerr, cfg, semantic);
         auto ir = toyc::SSABuilder(semantic).build(cfg);
         if (verifyIntermediate) toyc::verifyIR(ir, semantic);
+        toyc::OptimizationOptions optimizationOptions;
+        optimizationOptions.enabled = options.optimize;
+        optimizationOptions.verifyEach = verifyIntermediate;
+        optimizationOptions.dumpBefore = options.dumpIrBeforeOpt;
+        optimizationOptions.dumpAfterEach = options.dumpIrAfterEach;
+        optimizationOptions.printStats = options.printPassStats;
+        toyc::runOptimizationPipeline(ir, semantic, optimizationOptions, std::cerr);
+        if (verifyIntermediate) toyc::verifyIR(ir, semantic);
         if (options.dumpIr) toyc::printIR(std::cerr, ir, semantic);
-        auto machine = toyc::InstructionSelector(semantic).lower(ir);
+        toyc::ISelOptions iselOptions;
+        iselOptions.fuseCompareBranches = options.optimize;
+        auto machine = toyc::InstructionSelector(semantic, iselOptions).lower(ir);
         toyc::resolveParallelCopies(machine);
         if (verifyIntermediate) toyc::verifyMIR(machine, toyc::MIRStage::PreRegisterAllocation);
         if (options.dumpMir) toyc::printMIR(std::cerr, machine, semantic);
         for (auto& function : machine.functions) {
-            toyc::LinearScanRegisterAllocator().run(function);
+            toyc::RegAllocOptions registerOptions;
+            registerOptions.enableCopyHints = options.optimize;
+            registerOptions.enableRematerialization = options.optimize;
+            toyc::LinearScanRegisterAllocator(registerOptions).run(function);
             if (verifyIntermediate) toyc::verifyMIR(function, toyc::MIRStage::PostRegisterAllocation);
         }
         if (options.dumpMirAfterRA) toyc::printMIR(std::cerr, machine, semantic);
@@ -104,7 +124,6 @@ int main(int argc, char** argv) {
             toyc::FrameLowering().run(function);
             toyc::verifyMIR(function, toyc::MIRStage::AfterFrameLowering);
         }
-        (void)options.optimize;
         toyc::AsmPrinter(std::cout).print(machine, semantic);
         return 0;
     } catch (const toyc::CompileError& error) {

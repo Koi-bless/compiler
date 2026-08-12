@@ -1,0 +1,14 @@
+int loop(int a, int b, int n) {
+    int i = 0;
+    int total = 0;
+    while (i < n) {
+        int invariant = a + b;
+        total = total + invariant;
+        i = i + 1;
+    }
+    return total;
+}
+
+int main() {
+    return loop(2, 3, 4);
+}

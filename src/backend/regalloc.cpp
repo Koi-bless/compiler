@@ -22,12 +22,37 @@ AllocationResult LinearScanRegisterAllocator::run(MachineFunction& function) con
     AllocationResult result;
     result.registers.resize(function.vregCount);
     result.spillSlots.resize(function.vregCount);
+    result.rematerializations.resize(function.vregCount);
+    std::vector<std::vector<VRegId>> hints(function.vregCount);
+    std::vector<unsigned> definitionCounts(function.vregCount, 0);
+    for (const auto& block : function.blocks) for (const auto& instruction : block.instructions) {
+        if (options_.enableCopyHints && instruction.opcode == MOpcode::COPY &&
+            instruction.defs.size() == 1 && instruction.uses.size() == 1) {
+            const auto* destination = std::get_if<VirtualReg>(&instruction.defs[0]);
+            const auto* source = std::get_if<VirtualReg>(&instruction.uses[0]);
+            if (destination && source) {
+                hints[destination->id].push_back(source->id);
+                hints[source->id].push_back(destination->id);
+            }
+        }
+        for (const auto& operand : instruction.defs) if (const auto* reg = std::get_if<VirtualReg>(&operand)) {
+            ++definitionCounts[reg->id];
+            if (options_.enableRematerialization && definitionCounts[reg->id] == 1 &&
+                instruction.opcode == MOpcode::LI && instruction.uses.size() == 1) {
+                if (const auto* immediate = std::get_if<Immediate>(&instruction.uses[0]))
+                    result.rematerializations[reg->id] = Rematerialization{MOpcode::LI, *immediate};
+            } else {
+                result.rematerializations[reg->id].reset();
+            }
+        }
+    }
     std::map<VRegId, LiveInterval> intervals;
     for (const auto& interval : liveness.intervals) intervals[interval.vreg] = interval;
     std::vector<VRegId> active;
     std::uint32_t nextSpill = 0;
     auto spill = [&](VRegId id) {
-        if (!result.spillSlots[id]) result.spillSlots[id] = StackSlot{StackSlotKind::Spill, nextSpill++};
+        if (!result.rematerializations[id] && !result.spillSlots[id])
+            result.spillSlots[id] = StackSlot{StackSlotKind::Spill, nextSpill++};
         result.registers[id].reset();
     };
     for (const auto& current : liveness.intervals) {
@@ -37,8 +62,22 @@ AllocationResult LinearScanRegisterAllocator::run(MachineFunction& function) con
         std::set<PhysReg> used;
         for (const VRegId id : active) if (result.registers[id]) used.insert(*result.registers[id]);
         const auto& pool = current.crossesCall ? calleePool : callerPool;
-        const auto free = std::find_if(pool.begin(), pool.end(), [&](PhysReg reg) { return !used.contains(reg); });
-        if (free != pool.end()) result.registers[current.vreg] = *free;
+        std::optional<PhysReg> hinted;
+        if (options_.enableCopyHints) for (const VRegId other : hints[current.vreg]) {
+            if (!result.registers[other]) continue;
+            const PhysReg candidate = *result.registers[other];
+            if (std::find(pool.begin(), pool.end(), candidate) == pool.end()) continue;
+            bool conflict = used.contains(candidate);
+            if (conflict && intervals.contains(other) &&
+                intervals[other].end <= current.start)
+                conflict = false;
+            if (!conflict) { hinted = candidate; break; }
+        }
+        const auto free = std::find_if(pool.begin(), pool.end(), [&](PhysReg reg) {
+            return !used.contains(reg);
+        });
+        if (hinted) result.registers[current.vreg] = *hinted;
+        else if (free != pool.end()) result.registers[current.vreg] = *free;
         else {
             auto victim = active.end();
             for (auto iterator = active.begin(); iterator != active.end(); ++iterator) {
@@ -55,14 +94,24 @@ AllocationResult LinearScanRegisterAllocator::run(MachineFunction& function) con
             return intervals[a].end != intervals[b].end ? intervals[a].end < intervals[b].end : a < b;
         });
     }
-
     for (auto& block : function.blocks) {
         std::vector<MInstruction> rewritten;
         for (auto instruction : block.instructions) {
+            bool discardRematerializedDefinition = false;
+            if (options_.enableRematerialization && instruction.opcode == MOpcode::LI &&
+                instruction.defs.size() == 1) {
+                if (const auto* reg = std::get_if<VirtualReg>(&instruction.defs[0]);
+                    reg && !result.registers[reg->id] && result.rematerializations[reg->id])
+                    discardRematerializedDefinition = true;
+            }
+            if (discardRematerializedDefinition) continue;
             std::map<VRegId, PhysReg> scratchFor;
             std::vector<MInstruction> before, after;
             const auto scratch = [&](VRegId id) {
                 if (const auto found = scratchFor.find(id); found != scratchFor.end()) return found->second;
+                if (scratchFor.size() >= 2)
+                    throw CompileError(function.location, "register allocation",
+                                       "instruction needs more than two spill scratch registers");
                 const PhysReg reg = scratchFor.size() % 2 == 0 ? PhysReg::T5 : PhysReg::T6;
                 scratchFor[id] = reg; return reg;
             };
@@ -71,7 +120,11 @@ AllocationResult LinearScanRegisterAllocator::run(MachineFunction& function) con
                 if (result.registers[id]) operand = *result.registers[id];
                 else {
                     const PhysReg reg = scratch(id);
-                    before.push_back({MOpcode::LW, {reg}, {*result.spillSlots[id]}, {}, {}, instruction.location});
+                    if (result.rematerializations[id])
+                        before.push_back({MOpcode::LI, {reg},
+                            {result.rematerializations[id]->immediate}, {}, {}, instruction.location});
+                    else
+                        before.push_back({MOpcode::LW, {reg}, {*result.spillSlots[id]}, {}, {}, instruction.location});
                     operand = reg;
                 }
             }
@@ -81,7 +134,8 @@ AllocationResult LinearScanRegisterAllocator::run(MachineFunction& function) con
                 else {
                     const PhysReg reg = scratch(id);
                     operand = reg;
-                    after.push_back({MOpcode::SW, {}, {reg, *result.spillSlots[id]}, {}, {}, instruction.location});
+                    if (result.spillSlots[id])
+                        after.push_back({MOpcode::SW, {}, {reg, *result.spillSlots[id]}, {}, {}, instruction.location});
                 }
             }
             rewritten.insert(rewritten.end(), before.begin(), before.end());

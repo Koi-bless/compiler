@@ -150,6 +150,30 @@ struct DefInfo { BlockId block{}; std::size_t index{}; bool phi{}; };
 
 void verifyIRFunction(const IRFunction& function, const SemanticResult& semantic) {
     if (function.blocks.empty() || function.entry >= function.blocks.size()) invalidIR(function, "function has no valid entry block");
+    if (!function.blocks[function.entry].predecessors.empty())
+        invalidIR(function, "entry block has predecessors");
+    std::vector<bool> reachable(function.blocks.size(), false);
+    std::queue<BlockId> reachableWork;
+    reachable[function.entry] = true;
+    reachableWork.push(function.entry);
+    while (!reachableWork.empty()) {
+        const BlockId block = reachableWork.front();
+        reachableWork.pop();
+        if (!function.blocks[block].terminator)
+            invalidIR(function, "reachable block has no terminator");
+        for (const BlockId target : irTargets(function.blocks[block])) {
+            if (target >= function.blocks.size())
+                invalidIR(function, "branch target is outside the function");
+            if (!reachable[target]) { reachable[target] = true; reachableWork.push(target); }
+        }
+    }
+    if (!std::all_of(reachable.begin(), reachable.end(), [](bool value) { return value; }))
+        invalidIR(function, "unreachable block remains in IR");
+    for (const auto& block : function.blocks) {
+        for (const BlockId predecessor : block.predecessors)
+            if (predecessor >= function.blocks.size())
+                invalidIR(function, "predecessor is outside the function");
+    }
     std::vector<std::set<BlockId>> dom(function.blocks.size());
     std::set<BlockId> all; for (const auto& block : function.blocks) all.insert(block.id);
     for (const auto& block : function.blocks) dom[block.id] = block.id == function.entry ? std::set<BlockId>{block.id} : all;
@@ -169,6 +193,7 @@ void verifyIRFunction(const IRFunction& function, const SemanticResult& semantic
         }
     }
     std::vector<std::optional<DefInfo>> definitions(function.valueCount);
+    std::vector<bool> parameters(semantic.functions[function.function].parameterSymbols.size(), false);
     InstId expectedId = 0;
     for (const auto& block : function.blocks) {
         if (block.id >= function.blocks.size() || &block != &function.blocks[block.id]) invalidIR(function, "block IDs are not dense");
@@ -176,9 +201,16 @@ void verifyIRFunction(const IRFunction& function, const SemanticResult& semantic
         auto expected = irTargets(block), actual = block.successors; std::sort(actual.begin(), actual.end());
         if (expected != actual) invalidIR(function, "successor list does not match terminator");
         if (std::adjacent_find(actual.begin(), actual.end()) != actual.end()) invalidIR(function, "duplicate edge");
+        auto predecessors = block.predecessors;
+        std::sort(predecessors.begin(), predecessors.end());
+        if (std::adjacent_find(predecessors.begin(), predecessors.end()) != predecessors.end())
+            invalidIR(function, "duplicate predecessor");
         for (const BlockId successor : actual) {
             if (successor >= function.blocks.size() || !contains(function.blocks[successor].predecessors, block.id)) invalidIR(function, "asymmetric CFG edge");
         }
+        for (const BlockId predecessor : block.predecessors)
+            if (!contains(function.blocks[predecessor].successors, block.id))
+                invalidIR(function, "asymmetric predecessor edge");
         bool ordinarySeen = false;
         for (std::size_t index = 0; index < block.instructions.size(); ++index) {
             const auto& instruction = block.instructions[index];
@@ -191,11 +223,36 @@ void verifyIRFunction(const IRFunction& function, const SemanticResult& semantic
                 definitions[*instruction.result] = DefInfo{block.id, index, instruction.op == IROp::Phi};
             }
             const bool binary = instruction.op >= IROp::Add && instruction.op <= IROp::ICmpNE;
+            if (instruction.op == IROp::Call &&
+                (!instruction.callee || *instruction.callee >= semantic.functions.size()))
+                invalidIR(function, "invalid callee");
             const bool resultRequired = instruction.op != IROp::StoreGlobal &&
-                !(instruction.op == IROp::Call && instruction.callee && semantic.functions[*instruction.callee].returnType == ValueType::Void);
+                !(instruction.op == IROp::Call &&
+                  semantic.functions[*instruction.callee].returnType == ValueType::Void);
             if (resultRequired != instruction.result.has_value()) invalidIR(function, "opcode has invalid result");
             if (binary && instruction.operands.size() != 2) invalidIR(function, "binary opcode operand count mismatch");
             if ((instruction.op == IROp::Copy || instruction.op == IROp::LogicalNot || instruction.op == IROp::StoreGlobal) && instruction.operands.size() != 1) invalidIR(function, "unary opcode operand count mismatch");
+            if ((instruction.op == IROp::Param || instruction.op == IROp::Constant ||
+                 instruction.op == IROp::LoadGlobal) && !instruction.operands.empty())
+                invalidIR(function, "source opcode has operands");
+            if ((instruction.op == IROp::Param || instruction.op == IROp::Constant) !=
+                instruction.immediate.has_value())
+                invalidIR(function, "opcode has invalid immediate field");
+            if ((instruction.op == IROp::LoadGlobal || instruction.op == IROp::StoreGlobal) !=
+                instruction.global.has_value())
+                invalidIR(function, "opcode has invalid global field");
+            if ((instruction.op == IROp::Call) != instruction.callee.has_value())
+                invalidIR(function, "opcode has invalid callee field");
+            if (instruction.op != IROp::Phi && !instruction.phiInputs.empty())
+                invalidIR(function, "non-phi opcode has phi inputs");
+            if (instruction.op == IROp::Param) {
+                if (block.id != function.entry || *instruction.immediate < 0)
+                    invalidIR(function, "parameter definition is outside entry or has an invalid index");
+                const auto parameter = static_cast<std::size_t>(*instruction.immediate);
+                if (parameter >= parameters.size() || parameters[parameter])
+                    invalidIR(function, "parameter index is out of range or duplicated");
+                parameters[parameter] = true;
+            }
             if (instruction.op == IROp::Phi) {
                 if (block.id == function.entry) invalidIR(function, "entry block contains phi");
                 if (!instruction.operands.empty() || instruction.phiInputs.size() != block.predecessors.size()) invalidIR(function, "phi input count mismatch");
@@ -209,7 +266,6 @@ void verifyIRFunction(const IRFunction& function, const SemanticResult& semantic
                     invalidIR(function, "invalid global operation");
             }
             if (instruction.op == IROp::Call) {
-                if (!instruction.callee || *instruction.callee >= semantic.functions.size()) invalidIR(function, "invalid callee");
                 if (instruction.operands.size() != semantic.functions[*instruction.callee].parameterSymbols.size()) invalidIR(function, "call argument count mismatch");
             }
         }

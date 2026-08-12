@@ -19,6 +19,16 @@ add_library(toyc_lib
     src/ir/ssa_builder.cpp
     src/ir/ir_printer.cpp
     src/ir/verifier.cpp
+    src/opt/ir_utils.cpp
+    src/opt/instcombine.cpp
+    src/opt/local_dag.cpp
+    src/opt/sccp.cpp
+    src/opt/simplify_cfg.cpp
+    src/opt/dce.cpp
+    src/opt/gvn.cpp
+    src/opt/loop_analysis.cpp
+    src/opt/licm.cpp
+    src/opt/pipeline.cpp
     src/backend/mir.cpp
     src/backend/mir_printer.cpp
     src/backend/mir_verifier.cpp

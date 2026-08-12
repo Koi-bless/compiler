@@ -15,6 +15,8 @@ std::string_view opcodeName(MOpcode opcode) {
     case MOpcode::SLT:return "SLT"; case MOpcode::SLTU:return "SLTU"; case MOpcode::XOR:return "XOR";
     case MOpcode::XORI:return "XORI"; case MOpcode::SLTIU:return "SLTIU"; case MOpcode::LW:return "LW";
     case MOpcode::SW:return "SW"; case MOpcode::CALL:return "CALL"; case MOpcode::BRCOND:return "BRCOND";
+    case MOpcode::BEQ:return "BEQ"; case MOpcode::BNE:return "BNE";
+    case MOpcode::BLT:return "BLT"; case MOpcode::BGE:return "BGE";
     case MOpcode::JUMP:return "JUMP"; case MOpcode::RET:return "RET"; case MOpcode::PARALLEL_COPY:return "PARALLEL_COPY";
     }
     return "?";

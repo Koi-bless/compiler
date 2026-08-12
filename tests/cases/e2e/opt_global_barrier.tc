@@ -1,0 +1,12 @@
+int value = 2;
+
+int update() {
+    value = value + 3;
+    return value;
+}
+
+int main() {
+    int before = value;
+    update();
+    return before + value;
+}

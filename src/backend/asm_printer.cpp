@@ -73,6 +73,17 @@ private:
             out_ << "  bnez " << physRegName(reg(instruction, 0)) << ", "
                  << label(std::get<MachineBlockRef>(instruction.uses.at(1)).id) << "\n  j "
                  << label(std::get<MachineBlockRef>(instruction.uses.at(2)).id) << '\n'; break;
+        case MOpcode::BEQ: case MOpcode::BNE: case MOpcode::BLT: case MOpcode::BGE: {
+            const char* mnemonic = instruction.opcode == MOpcode::BEQ ? "beq" :
+                instruction.opcode == MOpcode::BNE ? "bne" :
+                instruction.opcode == MOpcode::BLT ? "blt" : "bge";
+            out_ << "  " << mnemonic << ' ' << physRegName(reg(instruction, 0)) << ", "
+                 << physRegName(reg(instruction, 1)) << ", "
+                 << label(std::get<MachineBlockRef>(instruction.uses.at(2)).id)
+                 << "\n  j "
+                 << label(std::get<MachineBlockRef>(instruction.uses.at(3)).id) << '\n';
+            break;
+        }
         case MOpcode::JUMP:
             out_ << "  j " << label(std::get<MachineBlockRef>(instruction.uses.at(0)).id) << '\n'; break;
         case MOpcode::RET: out_ << "  ret\n"; break;

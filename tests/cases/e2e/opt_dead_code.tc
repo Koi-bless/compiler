@@ -1,0 +1,12 @@
+int side = 0;
+
+int touch() {
+    side = side + 1;
+    return side;
+}
+
+int main() {
+    int dead = (2 + 3) * 4;
+    touch();
+    return side;
+}

@@ -38,14 +38,27 @@ That test generates assembly for every `tests/cases/e2e/*.tc` input, statically
 links both normal and `-opt` RV32 executables, runs them with `qemu-riscv32`, and
 checks their exit codes.
 
-The stage-two pipeline is `CFG -> SSA IR -> RISC-V MIR -> linear-scan register
-allocation -> frame lowering -> assembly`. Dumps are written to stderr, leaving
-stdout as valid assembly:
+The default pipeline canonicalizes SSA and conservatively removes dead
+instructions. `-opt` enables LocalDAG/InstCombine, SCCP, CFG simplification,
+DCE, dominator-scoped GVN, conservative LICM, compare-branch fusion, copy-aware
+linear scan, and spilled-constant rematerialization. Dumps and statistics are
+written to stderr, leaving stdout as valid assembly:
 
 ```sh
 ./build-wsl/compiler --dump-cfg --dump-ir --dump-mir \
   --dump-mir-after-ra --verify-each < input.tc > output.s
 ```
+
+Inspect and verify the optimized pipeline with:
+
+```sh
+./build-wsl/compiler -opt --verify-each \
+  --dump-ir-before-opt --dump-ir-after-each --dump-ir \
+  --print-pass-stats < input.tc > output.s 2> optimization.log
+```
+
+`--dump-ir-before-opt` shows freshly constructed SSA, `--dump-ir-after-each`
+adds a stable boundary after every pass, and `--dump-ir` shows final SSA.
 
 Deterministic differential testing against GCC is available with:
 

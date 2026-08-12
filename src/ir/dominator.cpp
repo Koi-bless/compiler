@@ -4,17 +4,38 @@
 #include <limits>
 
 #include "toyc/ir/cfg_utils.hpp"
+#include "toyc/opt/ir_utils.hpp"
 #include "toyc/support/diagnostic.hpp"
 
 namespace toyc {
 
 DominatorInfo::DominatorInfo(const CFGFunction& function)
-    : entry_(function.entry), idom_(function.blocks.size(), std::numeric_limits<BlockId>::max()),
-      children_(function.blocks.size()), frontier_(function.blocks.size()),
-      rpo_(computeReversePostOrder(function)) {
+    : rpo_(computeReversePostOrder(function)) {
     if (rpo_.size() != function.blocks.size())
         throw CompileError(function.location, "dominator", "unreachable blocks must be removed before analysis");
-    std::vector<std::size_t> order(function.blocks.size());
+    std::vector<std::vector<BlockId>> predecessors;
+    predecessors.reserve(function.blocks.size());
+    for (const auto& block : function.blocks) predecessors.push_back(block.predecessors);
+    initialize(function.entry, predecessors);
+}
+
+DominatorInfo::DominatorInfo(const IRFunction& function)
+    : rpo_(computeReversePostOrder(function)) {
+    if (rpo_.size() != function.blocks.size())
+        throw CompileError(function.location, "dominator", "unreachable blocks must be removed before analysis");
+    std::vector<std::vector<BlockId>> predecessors;
+    predecessors.reserve(function.blocks.size());
+    for (const auto& block : function.blocks) predecessors.push_back(block.predecessors);
+    initialize(function.entry, predecessors);
+}
+
+void DominatorInfo::initialize(
+    BlockId entry, const std::vector<std::vector<BlockId>>& predecessors) {
+    entry_ = entry;
+    idom_.assign(predecessors.size(), std::numeric_limits<BlockId>::max());
+    children_.assign(predecessors.size(), {});
+    frontier_.assign(predecessors.size(), {});
+    std::vector<std::size_t> order(predecessors.size());
     for (std::size_t index = 0; index < rpo_.size(); ++index) order[rpo_[index]] = index;
     idom_[entry_] = entry_;
     const auto intersect = [&](BlockId left, BlockId right) {
@@ -30,21 +51,22 @@ DominatorInfo::DominatorInfo(const CFGFunction& function)
         for (std::size_t index = 1; index < rpo_.size(); ++index) {
             const BlockId block = rpo_[index];
             BlockId next = std::numeric_limits<BlockId>::max();
-            for (const BlockId predecessor : function.blocks[block].predecessors) {
+            for (const BlockId predecessor : predecessors[block]) {
                 if (idom_[predecessor] == std::numeric_limits<BlockId>::max()) continue;
                 next = next == std::numeric_limits<BlockId>::max() ? predecessor : intersect(predecessor, next);
             }
             if (next != idom_[block]) { idom_[block] = next; changed = true; }
         }
     }
-    for (const auto& block : function.blocks)
-        if (block.id != entry_) children_[idom_[block.id]].push_back(block.id);
+    for (BlockId block = 0; block < predecessors.size(); ++block)
+        if (block != entry_) children_[idom_[block]].push_back(block);
     for (auto& values : children_) std::sort(values.begin(), values.end());
-    for (const auto& block : function.blocks) if (block.predecessors.size() >= 2) {
-        for (const BlockId predecessor : block.predecessors) {
+    for (BlockId block = 0; block < predecessors.size(); ++block)
+        if (predecessors[block].size() >= 2) {
+        for (const BlockId predecessor : predecessors[block]) {
             BlockId runner = predecessor;
-            while (runner != idom_[block.id]) {
-                frontier_[runner].push_back(block.id);
+            while (runner != idom_[block]) {
+                frontier_[runner].push_back(block);
                 runner = idom_[runner];
             }
         }

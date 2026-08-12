@@ -1,0 +1,9 @@
+int sum(int a, int b) {
+    int first = a + b;
+    int second = b + a;
+    return first + second;
+}
+
+int main() {
+    return sum(3, 4);
+}

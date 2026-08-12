@@ -33,7 +33,7 @@ enum class MOpcode {
     LI, LA, COPY,
     ADD, ADDI, SUB, MUL, DIV, REM,
     SLT, SLTU, XOR, XORI, SLTIU,
-    LW, SW, CALL, BRCOND, JUMP, RET, PARALLEL_COPY
+    LW, SW, CALL, BRCOND, BEQ, BNE, BLT, BGE, JUMP, RET, PARALLEL_COPY
 };
 
 struct MInstruction {

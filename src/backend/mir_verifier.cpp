@@ -17,7 +17,9 @@ namespace {
 }
 
 bool terminator(MOpcode opcode) {
-    return opcode == MOpcode::BRCOND || opcode == MOpcode::JUMP || opcode == MOpcode::RET;
+    return opcode == MOpcode::BRCOND || opcode == MOpcode::BEQ ||
+           opcode == MOpcode::BNE || opcode == MOpcode::BLT ||
+           opcode == MOpcode::BGE || opcode == MOpcode::JUMP || opcode == MOpcode::RET;
 }
 
 void checkOperand(const MachineFunction& function, MIRStage stage, const MOperand& operand) {
@@ -62,6 +64,21 @@ void verifyMIR(const MachineFunction& function, MIRStage stage) {
                     if (!instruction.implicitDefs.contains(reg)) invalid(function, stage, "call clobber mask is incomplete");
             }
             if (instruction.opcode == MOpcode::BRCOND && instruction.uses.size() != 3) invalid(function, stage, "conditional branch operand count mismatch");
+            if ((instruction.opcode == MOpcode::BEQ || instruction.opcode == MOpcode::BNE ||
+                 instruction.opcode == MOpcode::BLT || instruction.opcode == MOpcode::BGE)) {
+                if (instruction.uses.size() != 4)
+                    invalid(function, stage, "fused branch operand count mismatch");
+                if (!std::holds_alternative<MachineBlockRef>(instruction.uses[2]) ||
+                    !std::holds_alternative<MachineBlockRef>(instruction.uses[3]))
+                    invalid(function, stage, "fused branch lacks block targets");
+                for (std::size_t operand = 0; operand < 2; ++operand)
+                    if (stage == MIRStage::PreRegisterAllocation) {
+                        if (!std::holds_alternative<VirtualReg>(instruction.uses[operand]) &&
+                            !std::holds_alternative<PhysReg>(instruction.uses[operand]))
+                            invalid(function, stage, "fused branch comparison operand is not a register");
+                    } else if (!std::holds_alternative<PhysReg>(instruction.uses[operand]))
+                        invalid(function, stage, "fused branch retains a virtual comparison operand");
+            }
             if (instruction.opcode == MOpcode::JUMP && instruction.uses.size() != 1) invalid(function, stage, "jump operand count mismatch");
             if (stage == MIRStage::AfterFrameLowering &&
                 (instruction.opcode == MOpcode::ADDI || instruction.opcode == MOpcode::LW || instruction.opcode == MOpcode::SW))
