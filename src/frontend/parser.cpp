@@ -190,8 +190,18 @@ ExprPtr Parser::parseLogicalOr() {
 }
 
 ExprPtr Parser::parseLogicalAnd() {
-    auto lhs = parseRelational();
+    auto lhs = parseEquality();
     while (current_.type == TokenType::LogicalAnd) {
+        const auto start = lhs->range.begin; const auto op = current_.type; advance();
+        auto rhs = parseEquality(); const auto end = rhs->range.end;
+        lhs = std::make_unique<BinaryExpr>(at(start, end), binaryOperator(op), std::move(lhs), std::move(rhs));
+    }
+    return lhs;
+}
+
+ExprPtr Parser::parseEquality() {
+    auto lhs = parseRelational();
+    while (current_.type == TokenType::EqualEqual || current_.type == TokenType::NotEqual) {
         const auto start = lhs->range.begin; const auto op = current_.type; advance();
         auto rhs = parseRelational(); const auto end = rhs->range.end;
         lhs = std::make_unique<BinaryExpr>(at(start, end), binaryOperator(op), std::move(lhs), std::move(rhs));
@@ -202,8 +212,7 @@ ExprPtr Parser::parseLogicalAnd() {
 ExprPtr Parser::parseRelational() {
     auto lhs = parseAdditive();
     while (current_.type == TokenType::Less || current_.type == TokenType::Greater ||
-           current_.type == TokenType::LessEqual || current_.type == TokenType::GreaterEqual ||
-           current_.type == TokenType::EqualEqual || current_.type == TokenType::NotEqual) {
+           current_.type == TokenType::LessEqual || current_.type == TokenType::GreaterEqual) {
         const auto start = lhs->range.begin; const auto op = current_.type; advance();
         auto rhs = parseAdditive(); const auto end = rhs->range.end;
         lhs = std::make_unique<BinaryExpr>(at(start, end), binaryOperator(op), std::move(lhs), std::move(rhs));

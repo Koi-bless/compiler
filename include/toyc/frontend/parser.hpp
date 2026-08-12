@@ -36,6 +36,7 @@ private:
     ExprPtr parseExpr();
     ExprPtr parseLogicalOr();
     ExprPtr parseLogicalAnd();
+    ExprPtr parseEquality();
     ExprPtr parseRelational();
     ExprPtr parseAdditive();
     ExprPtr parseMultiplicative();

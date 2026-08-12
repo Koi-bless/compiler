@@ -13,6 +13,15 @@ int main() {
     toyc::printAst(output, *ast);
     check(output.str().find("(add 1 (mul 2 3))") != std::string::npos, "operator precedence is wrong");
     check(output.str().find("(if x\n      (if 0") != std::string::npos, "dangling else shape is wrong");
+
+    toyc::Lexer precedenceLexer("int main(){return 2==3<4;}");
+    toyc::Parser precedenceParser(precedenceLexer, diagnostics);
+    auto precedenceAst = precedenceParser.parseCompUnit();
+    std::ostringstream precedenceOutput;
+    toyc::printAst(precedenceOutput, *precedenceAst);
+    check(precedenceOutput.str().find("(eq 2 (lt 3 4))") != std::string::npos,
+          "equality must have lower precedence than relational operators");
+
     expectCompileError([] {
         toyc::DiagnosticEngine d; toyc::Lexer l("int main( { return 0; }");
         (void)toyc::Parser(l, d).parseCompUnit();
