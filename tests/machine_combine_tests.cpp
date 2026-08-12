@@ -61,8 +61,22 @@ int main() {
 
     auto nonPower = arithmeticFunction(toyc::MOpcode::MUL, 5);
     toyc::runPreRAMachineCombine(nonPower);
-    check(countOpcode(nonPower, toyc::MOpcode::MUL) == 1,
-          "non-power-of-two multiply was expanded");
+    check(countOpcode(nonPower, toyc::MOpcode::MUL) == 0 &&
+          countOpcode(nonPower, toyc::MOpcode::SLLI) == 1 &&
+          countOpcode(nonPower, toyc::MOpcode::ADD) == 1,
+          "power-plus-one multiply was not lowered to shift/add");
+
+    auto powerMinusOne = arithmeticFunction(toyc::MOpcode::MUL, 7);
+    toyc::runPreRAMachineCombine(powerMinusOne);
+    check(countOpcode(powerMinusOne, toyc::MOpcode::MUL) == 0 &&
+          countOpcode(powerMinusOne, toyc::MOpcode::SLLI) == 1 &&
+          countOpcode(powerMinusOne, toyc::MOpcode::SUB) == 1,
+          "power-minus-one multiply was not lowered to shift/sub");
+
+    auto costlyChain = arithmeticFunction(toyc::MOpcode::MUL, 11);
+    toyc::runPreRAMachineCombine(costlyChain);
+    check(countOpcode(costlyChain, toyc::MOpcode::MUL) == 1,
+          "constant multiply was expanded beyond the target cost budget");
 
     auto conservative = arithmeticFunction(toyc::MOpcode::DIV, 3);
     toyc::runPreRAMachineCombine(conservative);

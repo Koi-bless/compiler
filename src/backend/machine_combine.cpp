@@ -74,7 +74,9 @@ bool targetCombine(MachineFunction& function, const MachineCombineOptions& optio
     const DefinitionInfo definitions = buildDefinitions(function);
     bool changed = false;
     for (auto& block : function.blocks) {
-        for (auto& instruction : block.instructions) {
+        for (std::size_t instructionIndex = 0;
+             instructionIndex < block.instructions.size(); ++instructionIndex) {
+            auto& instruction = block.instructions[instructionIndex];
             if (options.combineImmediates && instruction.defs.size() == 1 &&
                 instruction.uses.size() == 2) {
                 if (instruction.opcode == MOpcode::ADD) {
@@ -105,21 +107,53 @@ bool targetCombine(MachineFunction& function, const MachineCombineOptions& optio
             }
             if (options.reducePowerOfTwoMultiply && instruction.opcode == MOpcode::MUL &&
                 instruction.defs.size() == 1 && instruction.uses.size() == 2) {
+                bool expanded = false;
                 for (const std::size_t constantIndex : {std::size_t{1}, std::size_t{0}}) {
                     const auto constant = constantFor(instruction.uses[constantIndex], definitions);
                     if (!constant) continue;
                     const std::uint32_t bits = std::bit_cast<std::uint32_t>(*constant);
-                    if (bits == 0 || (bits & (bits - 1)) != 0) continue;
-                    const unsigned shift = std::countr_zero(bits);
                     const MOperand value = instruction.uses[1 - constantIndex];
-                    instruction.opcode = shift == 0 ? MOpcode::COPY : MOpcode::SLLI;
-                    instruction.uses = shift == 0
-                        ? std::vector<MOperand>{value}
-                        : std::vector<MOperand>{value, Immediate{static_cast<std::int32_t>(shift)}};
-                    changed = true;
-                    ++result.instructionsRewritten;
-                    break;
+                    if (bits != 0 && (bits & (bits - 1)) == 0) {
+                        const unsigned shift = std::countr_zero(bits);
+                        instruction.opcode = shift == 0 ? MOpcode::COPY : MOpcode::SLLI;
+                        instruction.uses = shift == 0
+                            ? std::vector<MOperand>{value}
+                            : std::vector<MOperand>{value, Immediate{static_cast<std::int32_t>(shift)}};
+                        changed = true;
+                        ++result.instructionsRewritten;
+                        break;
+                    }
+                    // RV32IM multiplication can have multi-cycle latency.  A
+                    // power-of-two plus/minus one has a target cost of two
+                    // single-cycle ALU operations and needs no live constant.
+                    if (*constant <= 0) continue;
+                    for (unsigned shift = 1; shift <= 30; ++shift) {
+                        const std::uint32_t power = std::uint32_t{1} << shift;
+                        const bool plus = bits == power + 1;
+                        const bool minus = bits == power - 1;
+                        if (!plus && !minus) continue;
+                        const MOperand destination = instruction.defs[0];
+                        const MOperand temporary = vreg(function.vregCount++);
+                        instruction.opcode = MOpcode::SLLI;
+                        instruction.defs = {temporary};
+                        instruction.uses = {value,
+                            Immediate{static_cast<std::int32_t>(shift)}};
+                        MInstruction arithmetic{
+                            plus ? MOpcode::ADD : MOpcode::SUB,
+                            {destination}, {temporary, value}, {}, {},
+                            instruction.location};
+                        block.instructions.insert(
+                            block.instructions.begin() +
+                                static_cast<std::ptrdiff_t>(instructionIndex + 1),
+                            std::move(arithmetic));
+                        changed = true;
+                        expanded = true;
+                        result.instructionsRewritten += 2;
+                        break;
+                    }
+                    if (expanded) break;
                 }
+                if (expanded) continue;
             }
             if (options.useZeroRegister && zeroRegisterOpcode(instruction.opcode)) {
                 const std::size_t registerUses =

@@ -80,11 +80,24 @@ AllocationResult LinearScanRegisterAllocator::run(MachineFunction& function) con
         else if (free != pool.end()) result.registers[current.vreg] = *free;
         else {
             auto victim = active.end();
+            const auto priority = [&](VRegId id) {
+                const auto& interval = intervals[id];
+                const auto remaining = std::max<std::uint32_t>(
+                    1, interval.end >= current.start
+                        ? interval.end - current.start + 1 : 1);
+                return interval.spillWeight / static_cast<double>(remaining);
+            };
             for (auto iterator = active.begin(); iterator != active.end(); ++iterator) {
                 if (!result.registers[*iterator] || std::find(pool.begin(), pool.end(), *result.registers[*iterator]) == pool.end()) continue;
-                if (victim == active.end() || intervals[*iterator].end > intervals[*victim].end) victim = iterator;
+                if (victim == active.end() || priority(*iterator) < priority(*victim) ||
+                    (priority(*iterator) == priority(*victim) &&
+                     intervals[*iterator].end > intervals[*victim].end))
+                    victim = iterator;
             }
-            if (victim != active.end() && intervals[*victim].end > current.end) {
+            if (victim != active.end() &&
+                (priority(*victim) < priority(current.vreg) ||
+                 (priority(*victim) == priority(current.vreg) &&
+                  intervals[*victim].end > current.end))) {
                 const PhysReg reg = *result.registers[*victim];
                 spill(*victim); active.erase(victim); result.registers[current.vreg] = reg;
             } else spill(current.vreg);

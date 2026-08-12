@@ -46,6 +46,11 @@ bool producesValue(IROp op, const IRInstruction& instruction,
 bool hasSideEffects(const IRInstruction& instruction);
 bool readsMemory(const IRInstruction& instruction);
 bool mayTrap(const IRInstruction& instruction);
+// Returns true when this particular instruction is proven not to trap.  This
+// is intentionally stricter than !mayTrap(): operations such as division are
+// only accepted when their operands make every exceptional case impossible.
+bool isKnownNonTrapping(const IRInstruction& instruction,
+                        const IRFunction& function);
 bool isPure(const IRInstruction& instruction);
 bool isSafeToSpeculate(const IRInstruction& instruction);
 bool isCommutative(IROp op);

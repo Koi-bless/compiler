@@ -8,12 +8,15 @@
 #include "toyc/ir/verifier.hpp"
 #include "toyc/opt/dce.hpp"
 #include "toyc/opt/gvn.hpp"
+#include "toyc/opt/inline.hpp"
 #include "toyc/opt/instcombine.hpp"
 #include "toyc/opt/ir_utils.hpp"
 #include "toyc/opt/licm.hpp"
 #include "toyc/opt/local_dag.hpp"
+#include "toyc/opt/loop_transform.hpp"
 #include "toyc/opt/sccp.hpp"
 #include "toyc/opt/simplify_cfg.hpp"
+#include "toyc/opt/tail_recursion.hpp"
 
 namespace toyc {
 
@@ -78,6 +81,46 @@ void runOptimizationPipeline(IRModule& module, const SemanticResult& semantic,
         }, iteration).changed || changed;
         changed = run("InstCombine", [](IRFunction& function) {
             return runInstCombine(function);
+        }, iteration).changed || changed;
+        changed = run("DCE", [](IRFunction& function) {
+            return runDCE(function, true);
+        }, iteration).changed || changed;
+        if (!changed) break;
+    }
+    run("TailRecursionElimination", [](IRFunction& function) {
+        return runTailRecursionElimination(function);
+    });
+    {
+        const PassResult result = runFunctionInlining(module);
+        for (auto& function : module.functions) canonicalizeIR(function);
+#ifndef NDEBUG
+        verifyIR(module, semantic);
+#else
+        if (options.verifyEach) verifyIR(module, semantic);
+#endif
+        if (options.printStats)
+            diagnostics << "pass Inline: changed=" << (result.changed ? 1 : 0)
+                        << ", inst_removed=" << result.instructionsRemoved
+                        << ", inst_replaced=" << result.instructionsReplaced
+                        << ", blocks_removed=" << result.blocksRemoved << '\n';
+        if (options.dumpAfterEach) {
+            diagnostics << "*** IR after Inline: changed="
+                        << (result.changed ? 1 : 0) << " ***\n";
+            printIR(diagnostics, module, semantic);
+        }
+    }
+    run("LoopFinalValue/LoopDeletion", [&](IRFunction& function) {
+        return runLoopFinalValueAndDeletion(function, module);
+    });
+    for (unsigned iteration = 1; iteration <= 2; ++iteration) {
+        bool changed = false;
+        changed = run("SCCP", [](IRFunction& function) { return runSCCP(function); },
+                      iteration).changed || changed;
+        changed = run("InstCombine", [](IRFunction& function) {
+            return runInstCombine(function);
+        }, iteration).changed || changed;
+        changed = run("SimplifyCFG", [](IRFunction& function) {
+            return runSimplifyCFG(function);
         }, iteration).changed || changed;
         changed = run("DCE", [](IRFunction& function) {
             return runDCE(function, true);

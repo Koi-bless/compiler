@@ -26,7 +26,9 @@ PassResult runDCE(IRFunction& function, bool preserveMayTrap) {
     };
     for (auto& block : function.blocks) {
         for (auto& instruction : block.instructions)
-            if (hasSideEffects(instruction) || (preserveMayTrap && mayTrap(instruction)))
+            if (hasSideEffects(instruction) ||
+                (preserveMayTrap && mayTrap(instruction) &&
+                 !isKnownNonTrapping(instruction, function)))
                 markInstruction(&instruction);
         if (const auto* branch = std::get_if<BranchValue>(&*block.terminator))
             markValue(branch->condition);
@@ -47,8 +49,7 @@ PassResult runDCE(IRFunction& function, bool preserveMayTrap) {
         block.instructions.erase(
             std::remove_if(block.instructions.begin(), block.instructions.end(),
                            [&](const IRInstruction& instruction) {
-                               return !live[instruction.id] && !hasSideEffects(instruction) &&
-                                      !(preserveMayTrap && mayTrap(instruction));
+                               return !live[instruction.id];
                            }),
             block.instructions.end());
         result.instructionsRemoved += oldSize - block.instructions.size();

@@ -13,7 +13,8 @@ namespace {
 bool allowed(IROp op) {
     switch (op) {
     case IROp::Constant: case IROp::Copy: case IROp::Add: case IROp::Sub:
-    case IROp::Mul: case IROp::ICmpLT: case IROp::ICmpGT: case IROp::ICmpLE:
+    case IROp::Mul: case IROp::SDiv: case IROp::SRem:
+    case IROp::ICmpLT: case IROp::ICmpGT: case IROp::ICmpLE:
     case IROp::ICmpGE: case IROp::ICmpEQ: case IROp::ICmpNE:
     case IROp::LogicalNot:
         return true;
@@ -47,7 +48,8 @@ PassResult runLICM(IRFunction& function) {
                 for (std::size_t index = 0; index < instructions.size(); ++index) {
                     const auto& instruction = instructions[index];
                     if (!instruction.result || !allowed(instruction.op) ||
-                        !isSafeToSpeculate(instruction))
+                        (!isSafeToSpeculate(instruction) &&
+                         !isKnownNonTrapping(instruction, function)))
                         continue;
                     const bool invariant = std::all_of(
                         instruction.operands.begin(), instruction.operands.end(),

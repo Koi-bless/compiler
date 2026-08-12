@@ -21,12 +21,15 @@ add_library(toyc_lib
     src/ir/verifier.cpp
     src/opt/ir_utils.cpp
     src/opt/instcombine.cpp
+    src/opt/inline.cpp
     src/opt/local_dag.cpp
     src/opt/sccp.cpp
     src/opt/simplify_cfg.cpp
+    src/opt/tail_recursion.cpp
     src/opt/dce.cpp
     src/opt/gvn.cpp
     src/opt/loop_analysis.cpp
+    src/opt/loop_transform.cpp
     src/opt/licm.cpp
     src/opt/pipeline.cpp
     src/backend/mir.cpp

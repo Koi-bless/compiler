@@ -42,6 +42,53 @@ std::vector<MBlockId> reversePostOrder(const MachineFunction& function) {
     return postorder;
 }
 
+std::vector<unsigned> loopDepths(const MachineFunction& function) {
+    const std::size_t count = function.blocks.size();
+    std::vector<std::set<MBlockId>> dominators(count);
+    std::set<MBlockId> all;
+    for (const auto& block : function.blocks) all.insert(block.id);
+    for (const auto& block : function.blocks)
+        dominators[block.id] = block.id == function.entry
+            ? std::set<MBlockId>{block.id} : all;
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (const auto& block : function.blocks) {
+            if (block.id == function.entry || block.predecessors.empty()) continue;
+            std::set<MBlockId> next = all;
+            for (const MBlockId predecessor : block.predecessors) {
+                std::set<MBlockId> intersection;
+                std::set_intersection(next.begin(), next.end(),
+                    dominators[predecessor].begin(), dominators[predecessor].end(),
+                    std::inserter(intersection, intersection.end()));
+                next = std::move(intersection);
+            }
+            next.insert(block.id);
+            if (next != dominators[block.id]) {
+                dominators[block.id] = std::move(next);
+                changed = true;
+            }
+        }
+    }
+    std::vector<unsigned> depths(count);
+    for (const auto& tail : function.blocks) {
+        for (const MBlockId header : tail.successors) {
+            if (!dominators[tail.id].contains(header)) continue;
+            std::set<MBlockId> members{header, tail.id};
+            std::vector<MBlockId> work{tail.id};
+            while (!work.empty()) {
+                const MBlockId block = work.back();
+                work.pop_back();
+                if (block == header) continue;
+                for (const MBlockId predecessor : function.blocks[block].predecessors)
+                    if (members.insert(predecessor).second) work.push_back(predecessor);
+            }
+            for (const MBlockId member : members) ++depths[member];
+        }
+    }
+    return depths;
+}
+
 } // namespace
 
 LivenessResult computeLiveness(const MachineFunction& function) {
@@ -78,6 +125,8 @@ LivenessResult computeLiveness(const MachineFunction& function) {
         result.intervals[id].vreg = id; result.intervals[id].start = unset;
     }
     std::vector<std::uint32_t> blockStart(function.blocks.size()), blockEnd(function.blocks.size());
+    const auto depths = loopDepths(function);
+    std::vector<double> weightedUses(function.vregCount);
     std::uint32_t position = 0;
     for (const MBlockId id : rpo) {
         blockStart[id] = position;
@@ -87,6 +136,10 @@ LivenessResult computeLiveness(const MachineFunction& function) {
                 interval.start = std::min(interval.start, position);
                 interval.end = std::max(interval.end, position);
                 interval.uses.push_back(position);
+                double weight = 1.0;
+                for (unsigned depth = 0; depth < depths[id]; ++depth)
+                    weight = std::min(weight * 10.0, 1000000.0);
+                weightedUses[reg->id] += weight;
             }
             for (const auto& operand : instruction.defs) if (const auto* reg = std::get_if<VirtualReg>(&operand)) {
                 auto& interval = result.intervals[reg->id];
@@ -115,7 +168,7 @@ LivenessResult computeLiveness(const MachineFunction& function) {
     result.intervals.erase(std::remove_if(result.intervals.begin(), result.intervals.end(),
         [&](const LiveInterval& interval) { return interval.start == unset; }), result.intervals.end());
     for (auto& interval : result.intervals)
-        interval.spillWeight = static_cast<double>(std::max<std::size_t>(1, interval.uses.size()));
+        interval.spillWeight = std::max(1.0, weightedUses[interval.vreg]);
     std::sort(result.intervals.begin(), result.intervals.end(), [](const LiveInterval& a, const LiveInterval& b) {
         return a.start != b.start ? a.start < b.start : a.vreg < b.vreg;
     });

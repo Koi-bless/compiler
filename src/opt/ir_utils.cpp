@@ -395,6 +395,21 @@ bool mayTrap(const IRInstruction& instruction) {
     return instruction.op == IROp::SDiv || instruction.op == IROp::SRem;
 }
 
+bool isKnownNonTrapping(const IRInstruction& instruction,
+                        const IRFunction& function) {
+    if (!mayTrap(instruction)) return true;
+    if (instruction.operands.size() != 2) return false;
+    const auto* divisor = findDefinition(function, instruction.operands[1]);
+    if (!divisor || divisor->op != IROp::Constant || !divisor->immediate ||
+        *divisor->immediate == 0)
+        return false;
+    if (instruction.op == IROp::SRem) return true;
+    if (*divisor->immediate != -1) return true;
+    const auto* dividend = findDefinition(function, instruction.operands[0]);
+    return dividend && dividend->op == IROp::Constant && dividend->immediate &&
+           *dividend->immediate != std::numeric_limits<std::int32_t>::min();
+}
+
 bool isPure(const IRInstruction& instruction) {
     return instruction.op != IROp::Phi && instruction.op != IROp::Param &&
            !readsMemory(instruction) && !hasSideEffects(instruction);

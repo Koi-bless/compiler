@@ -83,11 +83,12 @@ Deterministic differential testing against GCC is available with:
 ```
 
 The benchmark compares normal ToyC output, `-opt` output, and GCC `-O2`. It reports
-ELF text size and median QEMU wall time. Each executable calls `main` repeatedly in
-one QEMU process so startup overhead is amortized. Tune the run length when needed:
+ELF text size and median QEMU wall time. By default each executable calls `main`
+once to match the course runner. Increase the iteration count when a benchmark is
+too short for stable local timing:
 
 ```sh
-TOYC_BENCH_ITERATIONS=500 TOYC_BENCH_SAMPLES=9 \
+TOYC_BENCH_ITERATIONS=1 TOYC_BENCH_SAMPLES=3 \
   ./scripts/benchmark.sh ./build-wsl/compiler tests/cases/bench/*.tc
 ```
 
