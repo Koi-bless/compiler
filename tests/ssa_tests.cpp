@@ -17,6 +17,24 @@ int main() {
     toyc::printIR(loopDump, loop.ir, loop.semantic);
     check(loopDump.str().find("phi [bb0:") != std::string::npos, "loop header lacks entry/backedge phi");
 
+    TestPipeline nestedJoin(R"(
+        int main() {
+            int a = 1;
+            int x = 0;
+            if (a) {
+                if (a) x = 1;
+                else x = 2;
+            } else {
+                x = 3;
+            }
+            return x;
+        }
+    )");
+    std::ostringstream nestedJoinDump;
+    toyc::printIR(nestedJoinDump, nestedJoin.ir, nestedJoin.semantic);
+    check(nestedJoinDump.str().find(" = phi ") != std::string::npos,
+          "nested branch join lacks SSA phi");
+
     TestPipeline globals("int g=1;int main(){g=g+1;return g;}");
     std::ostringstream globalDump;
     toyc::printIR(globalDump, globals.ir, globals.semantic);

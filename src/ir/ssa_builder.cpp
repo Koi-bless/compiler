@@ -162,6 +162,7 @@ IRFunction buildFunction(const CFGFunction& cfg) {
         auto& output = result.blocks[block.id];
         output.id = block.id;
         output.predecessors = block.predecessors;
+        std::sort(output.predecessors.begin(), output.predecessors.end());
         output.successors = block.successors;
         for (const TempId temp : phiTemps[block.id]) {
             (void)temp;
