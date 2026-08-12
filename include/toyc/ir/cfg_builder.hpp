@@ -21,6 +21,7 @@ private:
     std::optional<BlockId> currentBlock_;
     std::vector<std::pair<BlockId, BlockId>> loopTargets_;
     std::vector<std::optional<TempId>> localTemps_;
+    std::vector<const Declaration*> runtimeGlobalInitializers_;
 
     void buildFunction(const FunctionDecl& function);
     BlockId createBlock();

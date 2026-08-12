@@ -111,6 +111,13 @@ std::string_view tacName(TacOp op) {
 
 CFGModule CFGBuilder::build(const CompUnit& unit) {
     CFGModule module;
+    runtimeGlobalInitializers_.clear();
+    for (const auto& item : unit.items) {
+        const auto* declaration = dynamic_cast<const Declaration*>(item.get());
+        if (!declaration || declaration->isConst) continue;
+        const auto& symbol = semantic_.symbols[*declaration->resolvedSymbol];
+        if (!symbol.initialValue) runtimeGlobalInitializers_.push_back(declaration);
+    }
     for (const auto& item : unit.items) {
         if (const auto* function = dynamic_cast<const FunctionDecl*>(item.get())) {
             module.functions.push_back({});
@@ -140,6 +147,14 @@ void CFGBuilder::buildFunction(const FunctionDecl& function) {
     for (std::size_t index = 0; index < parameters.size(); ++index) {
         addInstruction(TacInst{TacOp::Param, localTemp(parameters[index]), {},
                                static_cast<std::int32_t>(index), {}, {}, function.range.begin});
+    }
+    if (function.name == "main") {
+        for (const Declaration* declaration : runtimeGlobalInitializers_) {
+            const TempId value = requireValue(*declaration->init);
+            addInstruction(TacInst{TacOp::StoreGlobal, {}, {value}, {},
+                                   *declaration->resolvedSymbol, {},
+                                   declaration->range.begin});
+        }
     }
     emitStmt(*function.body);
     if (currentBlock_) {

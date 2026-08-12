@@ -1,0 +1,5 @@
+int seed = 3;
+int next() { seed = seed + 4; return seed; }
+int value = next();
+int copy = value + 1;
+int main() { return copy + seed; }

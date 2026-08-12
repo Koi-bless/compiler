@@ -62,6 +62,7 @@ private:
     void analyzeStmt(Stmt& statement);
     ValueType analyzeExpr(Expr& expression, bool allowWideLiteral = false);
     void requireInt(Expr& expression, std::string_view context);
+    bool isConstantExpression(const Expr& expression) const;
     void validateConstantExpression(const Expr& expression) const;
     std::int32_t evaluateConstant(const Expr& expression) const;
 };

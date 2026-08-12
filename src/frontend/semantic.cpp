@@ -59,8 +59,10 @@ SemanticResult SemanticAnalyzer::analyze(CompUnit& unit) {
 void SemanticAnalyzer::analyzeDeclaration(Declaration& declaration, bool isGlobal) {
     requireInt(*declaration.init, "declaration initializer");
     std::optional<std::int32_t> staticValue;
-    if (declaration.isConst || isGlobal) {
+    if (declaration.isConst) {
         validateConstantExpression(*declaration.init);
+        staticValue = evaluateConstant(*declaration.init);
+    } else if (isGlobal && isConstantExpression(*declaration.init)) {
         staticValue = evaluateConstant(*declaration.init);
     }
     const SymbolId id = addSymbol(declaration.name, declaration.isConst, isGlobal,
@@ -168,6 +170,18 @@ ValueType SemanticAnalyzer::analyzeExpr(Expr& expression, bool allowWideLiteral)
         return function.returnType;
     }
     diagnostics_.fail(expression.range.begin, "internal", "unknown expression node");
+}
+
+bool SemanticAnalyzer::isConstantExpression(const Expr& expression) const {
+    if (dynamic_cast<const IntegerExpr*>(&expression)) return true;
+    if (const auto* name = dynamic_cast<const NameExpr*>(&expression))
+        return result_.symbols[*name->resolvedSymbol].isConst;
+    if (const auto* unary = dynamic_cast<const UnaryExpr*>(&expression))
+        return isConstantExpression(*unary->operand);
+    if (const auto* binary = dynamic_cast<const BinaryExpr*>(&expression))
+        return isConstantExpression(*binary->lhs) &&
+               isConstantExpression(*binary->rhs);
+    return false;
 }
 
 void SemanticAnalyzer::validateConstantExpression(const Expr& expression) const {

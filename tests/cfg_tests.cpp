@@ -14,4 +14,11 @@ int main() {
     check(!constantReturn.cfg.functions.empty(), "constant true return path was rejected");
     TestPipeline foldedReturn("int main(){if(1==1)return 1;}");
     check(!foldedReturn.cfg.functions.empty(), "constant expression return path was rejected");
+
+    TestPipeline globalInit("int seed=3;int next(){seed=seed+4;return seed;}int value=next();int main(){return value+seed;}");
+    std::ostringstream globalInitOutput;
+    toyc::printCFG(globalInitOutput, globalInit.cfg, globalInit.semantic);
+    check(globalInitOutput.str().find("call @next") != std::string::npos &&
+              globalInitOutput.str().find("store_global $1") != std::string::npos,
+          "runtime global initializer was not lowered into main");
 }

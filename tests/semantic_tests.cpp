@@ -16,5 +16,7 @@ int main() {
     expectCompileError([] { TestPipeline bad("void f(){} int main(){if(f())return 1;return 0;}"); }, "cannot have void type");
     expectCompileError([] { TestPipeline bad("void f(){return 1;} int main(){return 0;}"); }, "void function cannot return a value");
     expectCompileError([] { TestPipeline bad("int f(){return;} int main(){return 0;}"); }, "must return a value");
-    expectCompileError([] { TestPipeline bad("int a=1;int b=a;int main(){return b;}"); }, "depends on non-constant");
+    TestPipeline runtimeGlobal("int a=1;int b=a;int main(){return b;}");
+    check(!runtimeGlobal.semantic.symbols[1].initialValue,
+          "non-constant global initializer was treated as static data");
 }
