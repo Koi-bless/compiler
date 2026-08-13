@@ -54,8 +54,10 @@ PassResult runGVN(IRFunction& function,
     };
     PassResult result;
     using Table = std::map<ExpressionKey, ValueId>;
-    std::function<void(BlockId, Table)> visit = [&](BlockId blockId, Table table) {
+    Table table;
+    std::function<void(BlockId)> visit = [&](BlockId blockId) {
         auto& block = function.blocks[blockId];
+        std::vector<Table::iterator> scopedEntries;
         for (auto& instruction : block.instructions) {
             for (auto& operand : instruction.operands) operand = resolve(operand);
             if (!instruction.result || !eligible(instruction, effects)) continue;
@@ -77,9 +79,9 @@ PassResult runGVN(IRFunction& function,
             if (key.operands.size() == 2 && isCommutative(key.op) &&
                 key.operands[1] < key.operands[0])
                 std::swap(key.operands[0], key.operands[1]);
-            const auto found = table.find(key);
-            if (found == table.end()) {
-                table.emplace(key, current);
+            const auto [found, inserted] = table.emplace(key, current);
+            if (inserted) {
+                scopedEntries.push_back(found);
             } else {
                 const ValueId prior = resolve(found->second);
                 representative[current] = prior;
@@ -89,9 +91,10 @@ PassResult runGVN(IRFunction& function,
                 }
             }
         }
-        for (const BlockId child : dominators.children(blockId)) visit(child, table);
+        for (const BlockId child : dominators.children(blockId)) visit(child);
+        for (const auto entry : scopedEntries) table.erase(entry);
     };
-    visit(function.entry, {});
+    visit(function.entry);
     if (result.changed) compactIR(function);
     return result;
 }

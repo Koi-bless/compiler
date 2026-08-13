@@ -34,38 +34,46 @@ PassResult runLICM(IRFunction& function) {
     for (const auto& loop : loops) {
         if (!loop.preheader) continue;
         const std::set<BlockId> loopBlocks(loop.blocks.begin(), loop.blocks.end());
+        // Hoisting never changes the CFG, so the reverse postorder and the
+        // definition-block map are computed once; hoisting a value only moves
+        // its definition to the preheader, which is tracked incrementally.
+        const auto order = computeReversePostOrder(function);
+        std::vector<BlockId> definitionBlock(function.valueCount, function.entry);
+        for (const auto& block : function.blocks)
+            for (const auto& instruction : block.instructions)
+                if (instruction.result) definitionBlock[*instruction.result] = block.id;
         bool moved = true;
         while (moved) {
             moved = false;
-            std::vector<BlockId> definitionBlock(function.valueCount, function.entry);
-            for (const auto& block : function.blocks)
-                for (const auto& instruction : block.instructions)
-                    if (instruction.result) definitionBlock[*instruction.result] = block.id;
-            const auto order = computeReversePostOrder(function);
             for (const BlockId blockId : order) {
                 if (!loopBlocks.contains(blockId)) continue;
                 auto& instructions = function.blocks[blockId].instructions;
-                for (std::size_t index = 0; index < instructions.size(); ++index) {
+                for (std::size_t index = 0; index < instructions.size();) {
                     const auto& instruction = instructions[index];
                     if (!instruction.result || !allowed(instruction.op) ||
                         (!isSafeToSpeculate(instruction) &&
-                         !isKnownNonTrapping(instruction, function)))
+                         !isKnownNonTrapping(instruction, function))) {
+                        ++index;
                         continue;
+                    }
                     const bool invariant = std::all_of(
                         instruction.operands.begin(), instruction.operands.end(),
                         [&](ValueId operand) {
                             return !loopBlocks.contains(definitionBlock[operand]);
                         });
-                    if (!invariant) continue;
+                    if (!invariant) {
+                        ++index;
+                        continue;
+                    }
+                    const ValueId resultValue = *instruction.result;
                     IRInstruction hoisted = std::move(instructions[index]);
                     instructions.erase(instructions.begin() + static_cast<std::ptrdiff_t>(index));
                     function.blocks[*loop.preheader].instructions.push_back(std::move(hoisted));
+                    definitionBlock[resultValue] = *loop.preheader;
                     result.changed = true;
                     ++result.instructionsReplaced;
                     moved = true;
-                    break;
                 }
-                if (moved) break;
             }
         }
     }
