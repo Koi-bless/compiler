@@ -36,6 +36,8 @@ LoopPredicate swapped(LoopPredicate predicate) {
     case LoopPredicate::LE: return LoopPredicate::GE;
     case LoopPredicate::GT: return LoopPredicate::LT;
     case LoopPredicate::GE: return LoopPredicate::LE;
+    case LoopPredicate::EQ: return LoopPredicate::EQ;
+    case LoopPredicate::NE: return LoopPredicate::NE;
     }
     return predicate;
 }
@@ -46,6 +48,8 @@ LoopPredicate inverted(LoopPredicate predicate) {
     case LoopPredicate::LE: return LoopPredicate::GT;
     case LoopPredicate::GT: return LoopPredicate::LE;
     case LoopPredicate::GE: return LoopPredicate::LT;
+    case LoopPredicate::EQ: return LoopPredicate::NE;
+    case LoopPredicate::NE: return LoopPredicate::EQ;
     }
     return predicate;
 }
@@ -56,6 +60,8 @@ std::optional<LoopPredicate> predicateFor(IROp op) {
     case IROp::ICmpLE: return LoopPredicate::LE;
     case IROp::ICmpGT: return LoopPredicate::GT;
     case IROp::ICmpGE: return LoopPredicate::GE;
+    case IROp::ICmpEQ: return LoopPredicate::EQ;
+    case IROp::ICmpNE: return LoopPredicate::NE;
     default: return std::nullopt;
     }
 }
@@ -87,6 +93,17 @@ std::optional<std::uint64_t> tripCount(std::int32_t initial,
         if (stride >= 0) return std::nullopt;
         const std::int64_t magnitude = -stride;
         if (start >= limit) count = (start - limit) / magnitude + 1;
+        break;
+    }
+    case LoopPredicate::EQ:
+        if (start == limit) count = 1;
+        break;
+    case LoopPredicate::NE: {
+        if (start == limit) break;
+        const std::int64_t distance = limit - start;
+        if (distance % stride != 0 || distance / stride <= 0)
+            return std::nullopt;
+        count = distance / stride;
         break;
     }
     }

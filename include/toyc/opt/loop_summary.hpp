@@ -7,7 +7,7 @@
 
 namespace toyc {
 
-enum class LoopPredicate { LT, LE, GT, GE };
+enum class LoopPredicate { LT, LE, GT, GE, EQ, NE };
 
 // A canonical counted loop whose induction values and trip count are exact.
 // Keeping this analysis separate lets transformations and effect analysis share

@@ -4,9 +4,9 @@
 
 namespace toyc {
 
-// Clone small acyclic callees, including branches and multiple returns.  The
+// Clone small non-recursive callees, including functions with CFG cycles.  The
 // module budget and call-graph cycle check bound code growth.
-PassResult runFunctionInlining(IRModule& module, std::size_t growthBudget = 512,
-                               std::size_t calleeInstructionLimit = 64);
+PassResult runFunctionInlining(IRModule& module, std::size_t growthBudget = 2048,
+                               std::size_t calleeInstructionLimit = 192);
 
 } // namespace toyc

@@ -1,7 +1,6 @@
 #include "toyc/opt/inline.hpp"
 
 #include <algorithm>
-#include <functional>
 #include <map>
 #include <optional>
 #include <vector>
@@ -15,21 +14,6 @@ const IRFunction* findFunction(const IRModule& module, FuncId id) {
     for (const auto& function : module.functions)
         if (function.function == id) return &function;
     return nullptr;
-}
-
-bool hasCfgCycle(const IRFunction& function) {
-    enum class Color { White, Gray, Black };
-    std::vector<Color> colors(function.blocks.size(), Color::White);
-    std::function<bool(BlockId)> visit = [&](BlockId block) {
-        colors[block] = Color::Gray;
-        for (const BlockId successor : function.blocks[block].successors) {
-            if (colors[successor] == Color::Gray) return true;
-            if (colors[successor] == Color::White && visit(successor)) return true;
-        }
-        colors[block] = Color::Black;
-        return false;
-    };
-    return visit(function.entry);
 }
 
 bool reachesFunction(const IRModule& module, FuncId from, FuncId target,
@@ -52,8 +36,7 @@ const IRFunction* inlineCandidate(const IRModule& module, FuncId caller,
                                   FuncId callee, std::size_t limit) {
     if (caller == callee) return nullptr;
     const IRFunction* function = findFunction(module, callee);
-    if (!function || function->blocks.empty() || hasCfgCycle(*function))
-        return nullptr;
+    if (!function || function->blocks.empty()) return nullptr;
 
     std::size_t instructionCount = 0;
     std::size_t returns = 0;

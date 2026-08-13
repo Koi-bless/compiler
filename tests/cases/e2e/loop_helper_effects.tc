@@ -1,0 +1,14 @@
+int state = 1;
+
+int update(int limit) {
+    int i = 0;
+    while (i < limit) {
+        state = state * 3 + i;
+        i = i + 1;
+    }
+    return state;
+}
+
+int main() {
+    return update(10);
+}

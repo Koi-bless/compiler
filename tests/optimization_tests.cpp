@@ -243,6 +243,61 @@ void testExactLoopFinalValues() {
           "negative-step final value is incorrect");
 }
 
+void testEqualityCountedLoops() {
+    TestPipeline descending(R"(
+        int main() {
+            int n = 1000000;
+            int sum = 0;
+            while (n != 0) {
+                sum = sum + n;
+                n = n - 1;
+            }
+            return sum;
+        }
+    )", true);
+    check(toyc::analyzeLoops(descending.ir.functions[0]).empty(),
+          "not-equal counted loop was not deleted");
+    check(returnedConstant(descending.ir.functions[0]).has_value(),
+          "not-equal counted loop final value was not folded");
+
+    TestPipeline equalOnce(R"(
+        int main() {
+            int n = 3;
+            int value = 1;
+            while (n == 3) {
+                value = value * 5;
+                n = n - 1;
+            }
+            return value + n;
+        }
+    )", true);
+    check(toyc::analyzeLoops(equalOnce.ir.functions[0]).empty(),
+          "equal counted loop was not deleted");
+    check(returnedConstant(equalOnce.ir.functions[0]) == 7,
+          "equal counted loop final value is incorrect");
+
+    TestPipeline deadCall(R"(
+        int dead() {
+            int n = 1000000;
+            while (n != 0) n = n - 1;
+            return n;
+        }
+        int main() { dead(); return 9; }
+    )", true);
+    check(countOp(deadCall.ir, toyc::IROp::Call) == 0,
+          "unused pure not-equal loop call was not deleted");
+
+    TestPipeline unreachableBound(R"(
+        int main() {
+            int n = 10;
+            while (n != 1) n = n - 2;
+            return n;
+        }
+    )", true);
+    check(!toyc::analyzeLoops(unreachableBound.ir.functions[0]).empty(),
+          "nonterminating not-equal loop was incorrectly deleted");
+}
+
 void testAffineLoopRecurrences() {
     TestPipeline additive(R"(
         int main() {
@@ -403,6 +458,29 @@ void testInliningAndReadOnlyLoopCollapse() {
           "immutable-global loop collapse produced the wrong result");
 }
 
+void testLoopFunctionInliningAndCollapse() {
+    TestPipeline optimized(R"(
+        int accumulate(int seed, int limit) {
+            int i = 0;
+            int value = seed;
+            while (i < limit) {
+                value = value * 3 + i;
+                i = i + 1;
+            }
+            return value;
+        }
+        int main() { return accumulate(7, 1000000); }
+    )", true);
+
+    const auto& mainFunction = optimized.ir.functions[1];
+    check(countOp(optimized.ir, toyc::IROp::Call) == 0,
+          "loop-function inlining: call remains in main");
+    check(toyc::analyzeLoops(mainFunction).empty(),
+          "loop-function inlining: exact affine loop remains in main");
+    check(returnedConstant(mainFunction).has_value(),
+          "loop-function inlining: final value was not folded");
+}
+
 void testNestedConstantControlLoopCollapse() {
     TestPipeline nested(R"(
         int main() {
@@ -439,8 +517,8 @@ void testTailRecursionElimination() {
         }
         int main() { return sum(20, 0); }
     )", true);
-    check(countOp(tail.ir, toyc::IROp::Call) == 1,
-          "direct tail recursion was not eliminated");
+    check(countOp(tail.ir, toyc::IROp::Call) == 0,
+          "constant tail-recursive call was not inlined and collapsed");
     check(!toyc::analyzeLoops(tail.ir.functions[0]).empty(),
           "tail recursion was not rewritten as a loop");
     check(toyc::analyzeLoops(tail.ir.functions[1]).empty(),
@@ -499,11 +577,13 @@ int main() {
         testCompareBranchFusion();
         testLoopInvariantHoisting();
         testExactLoopFinalValues();
+        testEqualityCountedLoops();
         testAffineLoopRecurrences();
         testFiniteLoopFunctionEffects();
         testLoopDeletionSafety();
         testPreciseNonTrappingDCE();
         testInliningAndReadOnlyLoopCollapse();
+        testLoopFunctionInliningAndCollapse();
         testNestedConstantControlLoopCollapse();
         testTailRecursionElimination();
         testPipelineIdempotence();
