@@ -432,7 +432,14 @@ bool tryDeleteOneLoop(IRFunction& function, const Loop& loop,
         invariantCache.emplace(value, invariant);
         return invariant;
     };
-    const auto canMaterialize = [&](const auto& self, ValueId value) -> bool {
+    // canMaterialize collects the slice of values that would be rematerialized
+    // into `slice`, but the slice is only merged into `needed` when the whole
+    // subgraph materializes successfully.  A failed attempt must not leave
+    // entries behind: the side-effect/trap check below treats values in
+    // `needed` as preserved in the preheader, and a polluted entry could
+    // wrongly excuse a trapping SRem or a call that is never emitted.
+    const auto canMaterialize = [&](const auto& self, ValueId value,
+                                    std::set<ValueId>& slice) -> bool {
         if (value == exact->induction || !members.contains(definitionBlocks[value]))
             return true;
         if (!visiting.insert(value).second) return false;
@@ -448,17 +455,22 @@ bool tryDeleteOneLoop(IRFunction& function, const Loop& loop,
             visiting.erase(value);
             return false;
         }
-        needed.insert(value);
+        std::set<ValueId> local{value};
         const bool valid = std::all_of(definition->operands.begin(),
             definition->operands.end(), [&](ValueId operand) {
-                return self(self, operand);
+                return self(self, operand, local);
             });
         visiting.erase(value);
+        if (valid) slice.insert(local.begin(), local.end());
         return valid;
     };
     std::map<ValueId, std::int32_t> evaluated;
     for (auto& [from, to] : replacements) {
-        if (canMaterialize(canMaterialize, to)) continue;
+        std::set<ValueId> slice;
+        if (canMaterialize(canMaterialize, to, slice)) {
+            needed.insert(slice.begin(), slice.end());
+            continue;
+        }
         if (exact->trips == 0) return false;
         const auto value = evaluateFinalIteration(function, loop, *exact, to);
         if (!value) return false;

@@ -80,11 +80,18 @@ PassResult runSCCP(IRFunction& function) {
     executable[function.entry] = true;
 
     bool changed = true;
+    bool converged = true;
     unsigned iterations = 0;
     while (changed) {
         changed = false;
-        if (++iterations > function.valueCount + function.blocks.size() * 4U + 16U)
+        if (++iterations > function.valueCount + function.blocks.size() * 4U + 16U) {
+            // The lattice may not have reached a fixed point.  A value still
+            // marked Constant could yet fall to Overdefined on a later scan,
+            // so rewriting from this state could miscompile; bail out with
+            // no changes instead.
+            converged = false;
             break;
+        }
         for (const auto& block : function.blocks) if (executable[block.id]) {
             for (const auto& instruction : block.instructions) {
                 if (!instruction.result) continue;
@@ -117,6 +124,7 @@ PassResult runSCCP(IRFunction& function) {
     }
 
     PassResult result;
+    if (!converged) return result;
     for (auto& block : function.blocks) {
         if (!block.terminator) continue;
         if (auto* branch = std::get_if<BranchValue>(&*block.terminator)) {
