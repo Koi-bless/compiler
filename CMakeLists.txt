@@ -30,6 +30,7 @@ add_library(toyc_lib
     src/opt/dce.cpp
     src/opt/gvn.cpp
     src/opt/loop_analysis.cpp
+    src/opt/loop_summary.cpp
     src/opt/loop_transform.cpp
     src/opt/licm.cpp
     src/opt/pipeline.cpp

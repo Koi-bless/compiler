@@ -9,6 +9,7 @@
 #include "toyc/opt/function_effects.hpp"
 #include "toyc/opt/ir_utils.hpp"
 #include "toyc/opt/loop_analysis.hpp"
+#include "toyc/opt/loop_summary.hpp"
 
 namespace {
 
@@ -242,6 +243,99 @@ void testExactLoopFinalValues() {
           "negative-step final value is incorrect");
 }
 
+void testAffineLoopRecurrences() {
+    TestPipeline additive(R"(
+        int main() {
+            int i = 0;
+            int sum = 0;
+            while (i < 1000000) { sum = sum + i; i = i + 1; }
+            return sum;
+        }
+    )", true);
+    check(toyc::analyzeLoops(additive.ir.functions[0]).empty(),
+          "additive reduction loop was not deleted");
+    check(returnedConstant(additive.ir.functions[0]) == 1783293664,
+          "additive reduction has the wrong wrapped final value");
+
+    std::int32_t expectedAffine = 7;
+    for (std::int32_t i = 0; i < 64; ++i)
+        expectedAffine = toyc::wrapAdd(toyc::wrapMul(expectedAffine, 17), i);
+    TestPipeline affine(R"(
+        int main() {
+            int i = 0;
+            int state = 7;
+            while (i < 64) { state = state * 17 + i; i = i + 1; }
+            return state;
+        }
+    )", true);
+    check(toyc::analyzeLoops(affine.ir.functions[0]).empty(),
+          "affine recurrence loop was not deleted");
+    check(returnedConstant(affine.ir.functions[0]) == expectedAffine,
+          "affine recurrence has the wrong wrapped final value");
+
+    std::int32_t a = 1;
+    std::int32_t b = 1;
+    for (int i = 0; i < 1000000; ++i) {
+        const std::int32_t next = toyc::wrapAdd(a, b);
+        a = b;
+        b = next;
+    }
+    TestPipeline coupled(R"(
+        int main() {
+            int i = 0;
+            int a = 1;
+            int b = 1;
+            while (i < 1000000) {
+                int next = a + b;
+                a = b;
+                b = next;
+                i = i + 1;
+            }
+            return b;
+        }
+    )", true);
+    check(toyc::analyzeLoops(coupled.ir.functions[0]).empty(),
+          "coupled linear recurrence loop was not deleted");
+    check(returnedConstant(coupled.ir.functions[0]) == b,
+          "coupled linear recurrence has the wrong wrapped final value");
+}
+
+void testFiniteLoopFunctionEffects() {
+    const std::string finiteSource = R"(
+        int unused() {
+            int i = 0;
+            int sum = 0;
+            while (i < 1000000) { sum = sum + i; i = i + 1; }
+            return sum;
+        }
+        int main() { unused(); return 4; }
+    )";
+    TestPipeline finite(finiteSource);
+    const auto effects = toyc::analyzeFunctionEffects(finite.ir);
+    check(effects.functions[0].removableCall(),
+          "pure exact-count loop was not proven terminating");
+    toyc::runDCE(finite.ir.functions[1], true, &effects);
+    check(countOp(finite.ir, toyc::IROp::Call) == 0,
+          "unused call to a finite pure loop was not deleted");
+    TestPipeline optimizedFinite(finiteSource, true);
+    check(countOp(optimizedFinite.ir, toyc::IROp::Call) == 0,
+          "optimization pipeline retained an unused finite pure loop call");
+
+    TestPipeline unknown(R"(
+        int maybeForever(int n) {
+            while (n != 0) n = n + 1;
+            return n;
+        }
+        int main() { maybeForever(1); return 4; }
+    )");
+    const auto unknownEffects = toyc::analyzeFunctionEffects(unknown.ir);
+    check(!unknownEffects.functions[0].removableCall(),
+          "unproven loop was incorrectly treated as terminating");
+    toyc::runDCE(unknown.ir.functions[1], true, &unknownEffects);
+    check(countOp(unknown.ir, toyc::IROp::Call) == 1,
+          "call to a potentially nonterminating loop was deleted");
+}
+
 void testLoopDeletionSafety() {
     TestPipeline overflow(R"(
         int main() {
@@ -405,6 +499,8 @@ int main() {
         testCompareBranchFusion();
         testLoopInvariantHoisting();
         testExactLoopFinalValues();
+        testAffineLoopRecurrences();
+        testFiniteLoopFunctionEffects();
         testLoopDeletionSafety();
         testPreciseNonTrappingDCE();
         testInliningAndReadOnlyLoopCollapse();

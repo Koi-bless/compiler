@@ -1,6 +1,7 @@
 #include "toyc/opt/loop_transform.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cstdint>
 #include <limits>
 #include <map>
@@ -10,22 +11,10 @@
 
 #include "toyc/opt/ir_utils.hpp"
 #include "toyc/opt/loop_analysis.hpp"
+#include "toyc/opt/loop_summary.hpp"
 
 namespace toyc {
 namespace {
-
-enum class Predicate { LT, LE, GT, GE };
-
-struct ExactLoop {
-    BlockId latch{};
-    BlockId exit{};
-    ValueId induction{};
-    ValueId initial{};
-    std::int32_t step{};
-    std::uint64_t trips{};
-    std::int32_t last{};
-    std::int32_t exitValue{};
-};
 
 std::optional<std::int32_t> constantValue(const IRFunction& function,
                                           ValueId value) {
@@ -33,146 +22,6 @@ std::optional<std::int32_t> constantValue(const IRFunction& function,
     if (!definition || definition->op != IROp::Constant || !definition->immediate)
         return std::nullopt;
     return definition->immediate;
-}
-
-Predicate swapped(Predicate predicate) {
-    switch (predicate) {
-    case Predicate::LT: return Predicate::GT;
-    case Predicate::LE: return Predicate::GE;
-    case Predicate::GT: return Predicate::LT;
-    case Predicate::GE: return Predicate::LE;
-    }
-    return predicate;
-}
-
-Predicate inverted(Predicate predicate) {
-    switch (predicate) {
-    case Predicate::LT: return Predicate::GE;
-    case Predicate::LE: return Predicate::GT;
-    case Predicate::GT: return Predicate::LE;
-    case Predicate::GE: return Predicate::LT;
-    }
-    return predicate;
-}
-
-std::optional<Predicate> predicateFor(IROp op) {
-    switch (op) {
-    case IROp::ICmpLT: return Predicate::LT;
-    case IROp::ICmpLE: return Predicate::LE;
-    case IROp::ICmpGT: return Predicate::GT;
-    case IROp::ICmpGE: return Predicate::GE;
-    default: return std::nullopt;
-    }
-}
-
-std::optional<std::uint64_t> tripCount(std::int32_t initial,
-                                       std::int32_t bound,
-                                       std::int32_t step,
-                                       Predicate predicate) {
-    const std::int64_t start = initial;
-    const std::int64_t limit = bound;
-    const std::int64_t stride = step;
-    std::int64_t count = 0;
-    switch (predicate) {
-    case Predicate::LT:
-        if (stride <= 0) return std::nullopt;
-        if (start < limit) count = (limit - start + stride - 1) / stride;
-        break;
-    case Predicate::LE:
-        if (stride <= 0) return std::nullopt;
-        if (start <= limit) count = (limit - start) / stride + 1;
-        break;
-    case Predicate::GT: {
-        if (stride >= 0) return std::nullopt;
-        const std::int64_t magnitude = -stride;
-        if (start > limit) count = (start - limit + magnitude - 1) / magnitude;
-        break;
-    }
-    case Predicate::GE: {
-        if (stride >= 0) return std::nullopt;
-        const std::int64_t magnitude = -stride;
-        if (start >= limit) count = (start - limit) / magnitude + 1;
-        break;
-    }
-    }
-    if (count < 0) return std::nullopt;
-    return static_cast<std::uint64_t>(count);
-}
-
-std::optional<ExactLoop> recognizeExactLoop(const IRFunction& function,
-                                            const Loop& loop) {
-    if (!loop.preheader || loop.latches.size() != 1) return std::nullopt;
-    const auto& header = function.blocks[loop.header];
-    const auto* branch = std::get_if<BranchValue>(&*header.terminator);
-    if (!branch) return std::nullopt;
-    const std::set<BlockId> members(loop.blocks.begin(), loop.blocks.end());
-    const bool trueInside = members.contains(branch->trueTarget);
-    const bool falseInside = members.contains(branch->falseTarget);
-    if (trueInside == falseInside) return std::nullopt;
-    const BlockId exit = trueInside ? branch->falseTarget : branch->trueTarget;
-    const auto* comparison = findDefinition(function, branch->condition);
-    if (!comparison || comparison->operands.size() != 2) return std::nullopt;
-    auto predicate = predicateFor(comparison->op);
-    if (!predicate) return std::nullopt;
-    if (!trueInside) *predicate = inverted(*predicate);
-
-    for (const auto& phi : header.instructions) {
-        if (phi.op != IROp::Phi) break;
-        if (!phi.result || phi.phiInputs.size() != 2) continue;
-        std::optional<ValueId> initialValue;
-        std::optional<ValueId> backedgeValue;
-        for (const auto& input : phi.phiInputs) {
-            if (input.predecessor == *loop.preheader) initialValue = input.value;
-            if (input.predecessor == loop.latches[0]) backedgeValue = input.value;
-        }
-        if (!initialValue || !backedgeValue) continue;
-        ValueId boundValue{};
-        if (comparison->operands[0] == *phi.result) {
-            boundValue = comparison->operands[1];
-        } else if (comparison->operands[1] == *phi.result) {
-            boundValue = comparison->operands[0];
-            *predicate = swapped(*predicate);
-        } else {
-            continue;
-        }
-        const auto initial = constantValue(function, *initialValue);
-        const auto bound = constantValue(function, boundValue);
-        if (!initial || !bound) continue;
-        const auto* update = findDefinition(function, *backedgeValue);
-        if (!update || update->operands.size() != 2) continue;
-        std::optional<std::int32_t> step;
-        if (update->op == IROp::Add) {
-            if (update->operands[0] == *phi.result)
-                step = constantValue(function, update->operands[1]);
-            else if (update->operands[1] == *phi.result)
-                step = constantValue(function, update->operands[0]);
-        } else if (update->op == IROp::Sub &&
-                   update->operands[0] == *phi.result) {
-            if (const auto amount = constantValue(function, update->operands[1])) {
-                const std::int64_t negated = -static_cast<std::int64_t>(*amount);
-                if (negated >= std::numeric_limits<std::int32_t>::min() &&
-                    negated <= std::numeric_limits<std::int32_t>::max())
-                    step = static_cast<std::int32_t>(negated);
-            }
-        }
-        if (!step || *step == 0) continue;
-        const auto trips = tripCount(*initial, *bound, *step, *predicate);
-        if (!trips) continue;
-        const std::int64_t exitValue = static_cast<std::int64_t>(*initial) +
-            static_cast<std::int64_t>(*trips) * static_cast<std::int64_t>(*step);
-        const std::int64_t last = *trips == 0 ? *initial :
-            static_cast<std::int64_t>(*initial) +
-                static_cast<std::int64_t>(*trips - 1) * static_cast<std::int64_t>(*step);
-        if (exitValue < std::numeric_limits<std::int32_t>::min() ||
-            exitValue > std::numeric_limits<std::int32_t>::max() ||
-            last < std::numeric_limits<std::int32_t>::min() ||
-            last > std::numeric_limits<std::int32_t>::max())
-            continue;
-        return ExactLoop{loop.latches[0], exit, *phi.result, *initialValue, *step,
-                         *trips, static_cast<std::int32_t>(last),
-                         static_cast<std::int32_t>(exitValue)};
-    }
-    return std::nullopt;
 }
 
 bool isCloneableInstruction(const IRInstruction& instruction,
@@ -291,8 +140,244 @@ bool isSafeFinalCall(const IRInstruction& call, const IRFunction& caller,
     return false;
 }
 
+struct LinearForm {
+    std::map<ValueId, std::uint32_t> terms;
+    std::uint32_t constant = 0;
+};
+
+void addTerm(LinearForm& form, ValueId value, std::uint32_t coefficient) {
+    if (coefficient == 0) return;
+    auto& destination = form.terms[value];
+    destination += coefficient;
+    if (destination == 0) form.terms.erase(value);
+}
+
+LinearForm combineForms(const LinearForm& lhs, const LinearForm& rhs,
+                        bool subtract) {
+    LinearForm result = lhs;
+    result.constant += subtract ? 0U - rhs.constant : rhs.constant;
+    for (const auto& [value, coefficient] : rhs.terms)
+        addTerm(result, value, subtract ? 0U - coefficient : coefficient);
+    return result;
+}
+
+LinearForm scaleForm(const LinearForm& form, std::uint32_t scale) {
+    LinearForm result;
+    result.constant = form.constant * scale;
+    for (const auto& [value, coefficient] : form.terms)
+        addTerm(result, value, coefficient * scale);
+    return result;
+}
+
+using Matrix = std::vector<std::vector<std::uint32_t>>;
+
+Matrix multiplyMatrices(const Matrix& lhs, const Matrix& rhs) {
+    const std::size_t size = lhs.size();
+    Matrix result(size, std::vector<std::uint32_t>(size));
+    for (std::size_t row = 0; row < size; ++row)
+        for (std::size_t shared = 0; shared < size; ++shared) {
+            if (lhs[row][shared] == 0) continue;
+            for (std::size_t column = 0; column < size; ++column)
+                result[row][column] += lhs[row][shared] * rhs[shared][column];
+        }
+    return result;
+}
+
+Matrix matrixPower(Matrix base, std::uint64_t exponent) {
+    Matrix result(base.size(), std::vector<std::uint32_t>(base.size()));
+    for (std::size_t index = 0; index < result.size(); ++index)
+        result[index][index] = 1;
+    while (exponent != 0) {
+        if ((exponent & 1U) != 0) result = multiplyMatrices(result, base);
+        exponent >>= 1U;
+        if (exponent != 0) base = multiplyMatrices(base, base);
+    }
+    return result;
+}
+
+std::optional<std::map<ValueId, LinearForm>> analyzeAffineRecurrences(
+    const IRFunction& function, const Loop& loop,
+    const CountedLoopSummary& exact, const std::set<ValueId>& liveOut,
+    const std::vector<BlockId>& definitionBlocks) {
+    const std::set<BlockId> members(loop.blocks.begin(), loop.blocks.end());
+    const auto* branch = std::get_if<BranchValue>(
+        &*function.blocks[loop.header].terminator);
+    if (!branch) return std::nullopt;
+    const bool trueInside = members.contains(branch->trueTarget);
+    BlockId current = trueInside ? branch->trueTarget : branch->falseTarget;
+    std::set<BlockId> iterationBlocks;
+    while (current != loop.header) {
+        if (!members.contains(current) || !iterationBlocks.insert(current).second)
+            return std::nullopt;
+        const auto* jump = std::get_if<IRJump>(
+            &*function.blocks[current].terminator);
+        if (!jump) return std::nullopt;
+        current = jump->target;
+    }
+    if (iterationBlocks.size() + 1 != members.size() ||
+        !iterationBlocks.contains(exact.latch))
+        return std::nullopt;
+
+    struct State {
+        ValueId value{};
+        ValueId initial{};
+        ValueId backedge{};
+    };
+    std::vector<State> states;
+    std::map<ValueId, std::size_t> stateIndex;
+    for (const auto& instruction : function.blocks[loop.header].instructions) {
+        if (instruction.op != IROp::Phi) break;
+        if (!instruction.result || instruction.phiInputs.size() != 2)
+            return std::nullopt;
+        std::optional<ValueId> initial;
+        std::optional<ValueId> backedge;
+        for (const auto& input : instruction.phiInputs) {
+            if (input.predecessor == *loop.preheader) initial = input.value;
+            if (input.predecessor == exact.latch) backedge = input.value;
+        }
+        if (!initial || !backedge) return std::nullopt;
+        stateIndex.emplace(*instruction.result, states.size());
+        states.push_back(State{*instruction.result, *initial, *backedge});
+    }
+    if (states.empty() || states.size() > 24) return std::nullopt;
+    for (const ValueId value : liveOut)
+        if (!stateIndex.contains(value)) return std::nullopt;
+
+    std::map<ValueId, LinearForm> memo;
+    std::set<ValueId> visiting;
+    const auto formFor = [&](const auto& self, ValueId value)
+        -> std::optional<LinearForm> {
+        if (const auto found = memo.find(value); found != memo.end())
+            return found->second;
+        if (stateIndex.contains(value)) {
+            LinearForm form;
+            addTerm(form, value, 1);
+            memo.emplace(value, form);
+            return form;
+        }
+        if (value >= definitionBlocks.size()) return std::nullopt;
+        const auto* definition = findDefinition(function, value);
+        if (!definition) return std::nullopt;
+        if (!members.contains(definitionBlocks[value])) {
+            LinearForm form;
+            if (definition->op == IROp::Constant && definition->immediate)
+                form.constant = std::bit_cast<std::uint32_t>(*definition->immediate);
+            else
+                addTerm(form, value, 1);
+            memo.emplace(value, form);
+            return form;
+        }
+        if (!visiting.insert(value).second) return std::nullopt;
+        std::optional<LinearForm> result;
+        if (definition->op == IROp::Constant && definition->immediate) {
+            LinearForm form;
+            form.constant = std::bit_cast<std::uint32_t>(*definition->immediate);
+            result = std::move(form);
+        } else if (definition->op == IROp::Copy &&
+                   definition->operands.size() == 1) {
+            result = self(self, definition->operands[0]);
+        } else if ((definition->op == IROp::Add ||
+                    definition->op == IROp::Sub) &&
+                   definition->operands.size() == 2) {
+            const auto lhs = self(self, definition->operands[0]);
+            const auto rhs = self(self, definition->operands[1]);
+            if (lhs && rhs)
+                result = combineForms(*lhs, *rhs, definition->op == IROp::Sub);
+        } else if (definition->op == IROp::Mul &&
+                   definition->operands.size() == 2) {
+            const auto lhs = self(self, definition->operands[0]);
+            const auto rhs = self(self, definition->operands[1]);
+            if (lhs && rhs) {
+                if (lhs->terms.empty()) result = scaleForm(*rhs, lhs->constant);
+                else if (rhs->terms.empty()) result = scaleForm(*lhs, rhs->constant);
+            }
+        }
+        visiting.erase(value);
+        if (result) memo.emplace(value, *result);
+        return result;
+    };
+
+    std::vector<LinearForm> updates;
+    std::set<ValueId> externalSet;
+    for (const auto& state : states) {
+        const auto update = formFor(formFor, state.backedge);
+        if (!update) return std::nullopt;
+        updates.push_back(*update);
+        for (const auto& [value, coefficient] : update->terms)
+            if (coefficient != 0 && !stateIndex.contains(value))
+                externalSet.insert(value);
+    }
+    if (states.size() + externalSet.size() + 1 > 32) return std::nullopt;
+    const std::vector<ValueId> externals(externalSet.begin(), externalSet.end());
+    std::map<ValueId, std::size_t> externalIndex;
+    for (std::size_t index = 0; index < externals.size(); ++index)
+        externalIndex.emplace(externals[index], states.size() + index);
+    const std::size_t constantIndex = states.size() + externals.size();
+    Matrix transform(constantIndex + 1,
+                     std::vector<std::uint32_t>(constantIndex + 1));
+    for (std::size_t row = 0; row < states.size(); ++row) {
+        for (const auto& [value, coefficient] : updates[row].terms) {
+            if (const auto state = stateIndex.find(value); state != stateIndex.end())
+                transform[row][state->second] += coefficient;
+            else if (const auto external = externalIndex.find(value);
+                     external != externalIndex.end())
+                transform[row][external->second] += coefficient;
+            else
+                return std::nullopt;
+        }
+        transform[row][constantIndex] = updates[row].constant;
+    }
+    for (std::size_t index = states.size(); index <= constantIndex; ++index)
+        transform[index][index] = 1;
+    const Matrix final = matrixPower(std::move(transform), exact.trips);
+
+    std::map<ValueId, LinearForm> plans;
+    for (const ValueId value : liveOut) {
+        const std::size_t row = stateIndex.at(value);
+        LinearForm plan;
+        for (std::size_t column = 0; column < states.size(); ++column)
+            addTerm(plan, states[column].initial, final[row][column]);
+        for (std::size_t column = 0; column < externals.size(); ++column)
+            addTerm(plan, externals[column], final[row][states.size() + column]);
+        plan.constant = final[row][constantIndex];
+        plans.emplace(value, std::move(plan));
+    }
+    return plans;
+}
+
+ValueId materializeLinearForm(IRFunction& function, BlockId block,
+                              const LinearForm& form) {
+    const auto appendBinary = [&](IROp op, ValueId lhs, ValueId rhs) {
+        IRInstruction instruction;
+        instruction.id = function.instructionCount++;
+        instruction.op = op;
+        instruction.result = function.valueCount++;
+        instruction.operands = {lhs, rhs};
+        const ValueId result = *instruction.result;
+        function.blocks[block].instructions.push_back(std::move(instruction));
+        return result;
+    };
+    std::optional<ValueId> result;
+    for (const auto& [value, coefficient] : form.terms) {
+        ValueId term = value;
+        if (coefficient != 1) {
+            const ValueId scale = getOrCreateEntryConstant(
+                function, std::bit_cast<std::int32_t>(coefficient));
+            term = appendBinary(IROp::Mul, term, scale);
+        }
+        result = result ? appendBinary(IROp::Add, *result, term) : term;
+    }
+    if (form.constant != 0 || !result) {
+        const ValueId constant = getOrCreateEntryConstant(
+            function, std::bit_cast<std::int32_t>(form.constant));
+        result = result ? appendBinary(IROp::Add, *result, constant) : constant;
+    }
+    return *result;
+}
+
 std::optional<std::int32_t> evaluateFinalIteration(
-    const IRFunction& function, const Loop& loop, const ExactLoop& exact,
+    const IRFunction& function, const Loop& loop,
+    const CountedLoopSummary& exact,
     ValueId target) {
     const std::set<BlockId> members(loop.blocks.begin(), loop.blocks.end());
     const auto* entryBranch = std::get_if<BranchValue>(
@@ -374,7 +459,7 @@ std::optional<std::int32_t> evaluateFinalIteration(
 
 bool tryDeleteOneLoop(IRFunction& function, const Loop& loop,
                       const IRModule& module, PassResult& result) {
-    const auto exact = recognizeExactLoop(function, loop);
+    const auto exact = summarizeCountedLoop(function, loop);
     if (!exact || !loop.preheader) return false;
     const std::set<BlockId> members(loop.blocks.begin(), loop.blocks.end());
 
@@ -456,8 +541,13 @@ bool tryDeleteOneLoop(IRFunction& function, const Loop& loop,
         visiting.erase(value);
         return valid;
     };
+    const auto affinePlans = exact->trips == 0
+        ? std::optional<std::map<ValueId, LinearForm>>{}
+        : analyzeAffineRecurrences(function, loop, *exact, liveOut,
+                                   definitionBlocks);
     std::map<ValueId, std::int32_t> evaluated;
     for (auto& [from, to] : replacements) {
+        if (affinePlans && affinePlans->contains(from)) continue;
         if (canMaterialize(canMaterialize, to)) continue;
         if (exact->trips == 0) return false;
         const auto value = evaluateFinalIteration(function, loop, *exact, to);
@@ -497,6 +587,14 @@ bool tryDeleteOneLoop(IRFunction& function, const Loop& loop,
         found->second = getOrCreateEntryConstant(function, exact->exitValue);
     for (const auto& [from, value] : evaluated)
         replacements[from] = getOrCreateEntryConstant(function, value);
+
+    if (affinePlans) {
+        for (const auto& [from, plan] : *affinePlans) {
+            if (from == exact->induction) continue;
+            replacements[from] = materializeLinearForm(
+                function, *loop.preheader, plan);
+        }
+    }
 
     auto& insertion = function.blocks[*loop.preheader].instructions;
     const auto materialize = [&](const auto& self, ValueId value) -> ValueId {

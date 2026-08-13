@@ -2,19 +2,30 @@
 
 #include <algorithm>
 #include <functional>
+#include <set>
+#include <utility>
 #include <vector>
 
 #include "toyc/opt/ir_utils.hpp"
+#include "toyc/opt/loop_analysis.hpp"
+#include "toyc/opt/loop_summary.hpp"
 
 namespace toyc {
 namespace {
 
-bool hasControlFlowCycle(const IRFunction& function) {
+bool hasUnprovenControlFlowCycle(const IRFunction& function) {
+    std::set<std::pair<BlockId, BlockId>> provenFiniteBackedges;
+    for (const auto& loop : analyzeLoops(function)) {
+        const auto summary = summarizeCountedLoop(function, loop);
+        if (!summary) continue;
+        provenFiniteBackedges.emplace(summary->latch, loop.header);
+    }
     enum class Color { White, Gray, Black };
     std::vector<Color> colors(function.blocks.size(), Color::White);
     std::function<bool(BlockId)> visit = [&](BlockId block) {
         colors[block] = Color::Gray;
         for (const BlockId successor : function.blocks[block].successors) {
+            if (provenFiniteBackedges.contains({block, successor})) continue;
             if (successor >= colors.size()) return true;
             if (colors[successor] == Color::Gray) return true;
             if (colors[successor] == Color::White && visit(successor)) return true;
@@ -56,7 +67,7 @@ FunctionEffectAnalysis analyzeFunctionEffects(const IRModule& module) {
 
     for (const auto& function : module.functions) {
         auto& effects = analysis.functions[function.function];
-        effects.mayNotReturn = hasControlFlowCycle(function);
+        effects.mayNotReturn = hasUnprovenControlFlowCycle(function);
         for (const auto& block : function.blocks) {
             if (std::holds_alternative<IRUnreachable>(*block.terminator))
                 effects.mayNotReturn = true;
