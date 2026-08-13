@@ -7,6 +7,7 @@
 #include "toyc/ir/ir_printer.hpp"
 #include "toyc/ir/verifier.hpp"
 #include "toyc/opt/dce.hpp"
+#include "toyc/opt/function_effects.hpp"
 #include "toyc/opt/gvn.hpp"
 #include "toyc/opt/inline.hpp"
 #include "toyc/opt/instcombine.hpp"
@@ -90,6 +91,16 @@ void runOptimizationPipeline(IRModule& module, const SemanticResult& semantic,
     run("TailRecursionElimination", [](IRFunction& function) {
         return runTailRecursionElimination(function);
     });
+    auto effects = analyzeFunctionEffects(module);
+    run("FunctionEffectsDCE", [&](IRFunction& function) {
+        return runDCE(function, true, &effects);
+    });
+    run("PureCallGVN", [&](IRFunction& function) {
+        return runGVN(function, &effects);
+    });
+    run("FunctionEffectsDCE", [&](IRFunction& function) {
+        return runDCE(function, true, &effects);
+    });
     {
         const PassResult result = runFunctionInlining(module);
         for (auto& function : module.functions) canonicalizeIR(function);
@@ -109,10 +120,12 @@ void runOptimizationPipeline(IRModule& module, const SemanticResult& semantic,
             printIR(diagnostics, module, semantic);
         }
     }
+    effects = analyzeFunctionEffects(module);
     run("LoopFinalValue/LoopDeletion", [&](IRFunction& function) {
         return runLoopFinalValueAndDeletion(function, module);
     });
-    for (unsigned iteration = 1; iteration <= 2; ++iteration) {
+    for (unsigned iteration = 1; iteration <= options.maxFixpointIterations;
+         ++iteration) {
         bool changed = false;
         changed = run("SCCP", [](IRFunction& function) { return runSCCP(function); },
                       iteration).changed || changed;
@@ -122,16 +135,24 @@ void runOptimizationPipeline(IRModule& module, const SemanticResult& semantic,
         changed = run("SimplifyCFG", [](IRFunction& function) {
             return runSimplifyCFG(function);
         }, iteration).changed || changed;
-        changed = run("DCE", [](IRFunction& function) {
-            return runDCE(function, true);
+        changed = run("GVN", [&](IRFunction& function) {
+            return runGVN(function, &effects);
+        }, iteration).changed || changed;
+        changed = run("DCE", [&](IRFunction& function) {
+            return runDCE(function, true, &effects);
         }, iteration).changed || changed;
         if (!changed) break;
     }
-    run("GVN", [](IRFunction& function) { return runGVN(function); });
-    run("DCE", [](IRFunction& function) { return runDCE(function, true); });
+    effects = analyzeFunctionEffects(module);
+    run("GVN", [&](IRFunction& function) { return runGVN(function, &effects); });
+    run("DCE", [&](IRFunction& function) {
+        return runDCE(function, true, &effects);
+    });
     run("LICM", [](IRFunction& function) { return runLICM(function); });
-    run("GVN", [](IRFunction& function) { return runGVN(function); });
-    run("DCE", [](IRFunction& function) { return runDCE(function, true); });
+    run("GVN", [&](IRFunction& function) { return runGVN(function, &effects); });
+    run("DCE", [&](IRFunction& function) {
+        return runDCE(function, true, &effects);
+    });
     run("SimplifyCFG", [](IRFunction& function) { return runSimplifyCFG(function); });
     run("CanonicalizeIR", [](IRFunction& function) {
         return PassResult{canonicalizeIR(function)};

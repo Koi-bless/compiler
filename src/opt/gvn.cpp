@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "toyc/ir/dominator.hpp"
+#include "toyc/opt/function_effects.hpp"
 #include "toyc/opt/ir_utils.hpp"
 
 namespace toyc {
@@ -13,13 +14,15 @@ namespace {
 
 struct ExpressionKey {
     IROp op{};
-    std::optional<ValueId> lhs;
-    std::optional<ValueId> rhs;
+    std::vector<ValueId> operands;
     std::optional<std::int32_t> immediate;
+    std::optional<FuncId> callee;
     auto operator<=>(const ExpressionKey&) const = default;
 };
 
-bool eligible(IROp op) {
+bool eligible(const IRInstruction& instruction,
+              const FunctionEffectAnalysis* effects) {
+    const IROp op = instruction.op;
     switch (op) {
     case IROp::Constant: case IROp::Copy:
     case IROp::Add: case IROp::Sub: case IROp::Mul:
@@ -28,14 +31,19 @@ bool eligible(IROp op) {
     case IROp::ICmpGE: case IROp::ICmpEQ: case IROp::ICmpNE:
     case IROp::LogicalNot:
         return true;
-    default:
-        return false;
+    case IROp::Call: {
+        if (!effects || !instruction.callee) return false;
+        const auto* summary = effects->lookup(*instruction.callee);
+        return summary && summary->readNone();
+    }
+    default: return false;
     }
 }
 
 } // namespace
 
-PassResult runGVN(IRFunction& function) {
+PassResult runGVN(IRFunction& function,
+                  const FunctionEffectAnalysis* effects) {
     DominatorInfo dominators(function);
     std::vector<ValueId> representative(function.valueCount);
     for (ValueId value = 0; value < function.valueCount; ++value)
@@ -50,7 +58,7 @@ PassResult runGVN(IRFunction& function) {
         auto& block = function.blocks[blockId];
         for (auto& instruction : block.instructions) {
             for (auto& operand : instruction.operands) operand = resolve(operand);
-            if (!instruction.result || !eligible(instruction.op)) continue;
+            if (!instruction.result || !eligible(instruction, effects)) continue;
             const ValueId current = *instruction.result;
             if (instruction.op == IROp::Copy) {
                 const ValueId prior = resolve(instruction.operands[0]);
@@ -64,10 +72,11 @@ PassResult runGVN(IRFunction& function) {
             ExpressionKey key;
             key.op = instruction.op;
             key.immediate = instruction.immediate;
-            if (!instruction.operands.empty()) key.lhs = instruction.operands[0];
-            if (instruction.operands.size() > 1) key.rhs = instruction.operands[1];
-            if (key.lhs && key.rhs && isCommutative(key.op) && *key.rhs < *key.lhs)
-                std::swap(key.lhs, key.rhs);
+            key.operands = instruction.operands;
+            key.callee = instruction.callee;
+            if (key.operands.size() == 2 && isCommutative(key.op) &&
+                key.operands[1] < key.operands[0])
+                std::swap(key.operands[0], key.operands[1]);
             const auto found = table.find(key);
             if (found == table.end()) {
                 table.emplace(key, current);

@@ -5,6 +5,8 @@
 
 #include "test_support.hpp"
 #include "toyc/ir/ir_printer.hpp"
+#include "toyc/opt/dce.hpp"
+#include "toyc/opt/function_effects.hpp"
 #include "toyc/opt/ir_utils.hpp"
 #include "toyc/opt/loop_analysis.hpp"
 
@@ -81,12 +83,62 @@ void testGlobalAndCallBarrier() {
         }
     )";
     TestPipeline optimized(source, true);
-    check(countOp(optimized.ir, toyc::IROp::Call) == 1,
-          "unused result call was deleted");
     check(countOp(optimized.ir, toyc::IROp::LoadGlobal) >= 2,
           "global loads were incorrectly combined across a call");
-    check(countOp(optimized.ir, toyc::IROp::StoreGlobal) == 1,
+    check(countOp(optimized.ir, toyc::IROp::StoreGlobal) >= 1,
           "global store was deleted");
+}
+
+void testFunctionEffectsAndCallDCE() {
+    TestPipeline pure(R"(
+        int dead(int x) {
+            if (x < 0) return 0 - x;
+            return x * 3 + 1;
+        }
+        int main() { dead(7); return 4; }
+    )");
+    const auto pureEffects = toyc::analyzeFunctionEffects(pure.ir);
+    check(pureEffects.functions[0].removableCall(),
+          "acyclic pure helper was not proven removable");
+    toyc::runDCE(pure.ir.functions[1], true, &pureEffects);
+    check(countOp(pure.ir, toyc::IROp::Call) == 0,
+          "unused pure call was not removed");
+
+    TestPipeline trapping(R"(
+        int divide(int x, int y) { return x / y; }
+        int main() { divide(7, 0); return 4; }
+    )");
+    const auto trapEffects = toyc::analyzeFunctionEffects(trapping.ir);
+    toyc::runDCE(trapping.ir.functions[1], true, &trapEffects);
+    check(countOp(trapping.ir, toyc::IROp::Call) == 1,
+          "potentially trapping call was incorrectly removed");
+
+    TestPipeline recursive(R"(
+        int recurse(int x) {
+            if (x == 0) return 0;
+            return recurse(x - 1);
+        }
+        int main() { recurse(3); return 4; }
+    )");
+    const auto recursiveEffects = toyc::analyzeFunctionEffects(recursive.ir);
+    toyc::runDCE(recursive.ir.functions[1], true, &recursiveEffects);
+    check(countOp(recursive.ir, toyc::IROp::Call) == 2,
+          "recursive call was incorrectly treated as proven terminating");
+}
+
+void testMultiBlockInlining() {
+    TestPipeline optimized(R"(
+        int absolute(int x) {
+            if (x < 0) return 0 - x;
+            return x;
+        }
+        int main() { return absolute(-9); }
+    )", true);
+    check(countOp(optimized.ir, toyc::IROp::Call) == 0,
+          "branching helper was not inlined");
+    check(returnedConstant(optimized.ir.functions[1]) == 9,
+          "multiple-return CFG inlining produced the wrong value");
+    toyc::verifyIR(optimized.ir, optimized.semantic);
 }
 
 void testCompareBranchFusion() {
@@ -325,6 +377,8 @@ int main() {
         testConstantBranchAndDeadCode();
         testRedundantExpression();
         testGlobalAndCallBarrier();
+        testFunctionEffectsAndCallDCE();
+        testMultiBlockInlining();
         testCompareBranchFusion();
         testLoopInvariantHoisting();
         testExactLoopFinalValues();

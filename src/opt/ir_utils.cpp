@@ -8,6 +8,7 @@
 #include <unordered_map>
 
 #include "toyc/support/diagnostic.hpp"
+#include "toyc/opt/function_effects.hpp"
 
 namespace toyc {
 namespace {
@@ -383,12 +384,22 @@ bool producesValue(IROp op, const IRInstruction& instruction,
     return true;
 }
 
-bool hasSideEffects(const IRInstruction& instruction) {
-    return instruction.op == IROp::StoreGlobal || instruction.op == IROp::Call;
+bool hasSideEffects(const IRInstruction& instruction,
+                    const FunctionEffectAnalysis* effects) {
+    if (instruction.op == IROp::StoreGlobal) return true;
+    if (instruction.op != IROp::Call) return false;
+    if (!effects || !instruction.callee) return true;
+    const auto* summary = effects->lookup(*instruction.callee);
+    return !summary || !summary->removableCall();
 }
 
-bool readsMemory(const IRInstruction& instruction) {
-    return instruction.op == IROp::LoadGlobal || instruction.op == IROp::Call;
+bool readsMemory(const IRInstruction& instruction,
+                 const FunctionEffectAnalysis* effects) {
+    if (instruction.op == IROp::LoadGlobal) return true;
+    if (instruction.op != IROp::Call) return false;
+    if (!effects || !instruction.callee) return true;
+    const auto* summary = effects->lookup(*instruction.callee);
+    return !summary || !summary->readNone();
 }
 
 bool mayTrap(const IRInstruction& instruction) {

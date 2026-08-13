@@ -10,6 +10,8 @@
 
 namespace toyc {
 
+struct FunctionEffectAnalysis;
+
 struct IRUse {
     BlockId block{};
     std::optional<InstId> instruction;
@@ -43,8 +45,10 @@ std::optional<std::int32_t> foldBinary(IROp op, std::int32_t lhs,
 
 bool producesValue(IROp op, const IRInstruction& instruction,
                    const SemanticResult& semantic);
-bool hasSideEffects(const IRInstruction& instruction);
-bool readsMemory(const IRInstruction& instruction);
+bool hasSideEffects(const IRInstruction& instruction,
+                    const FunctionEffectAnalysis* effects = nullptr);
+bool readsMemory(const IRInstruction& instruction,
+                 const FunctionEffectAnalysis* effects = nullptr);
 bool mayTrap(const IRInstruction& instruction);
 // Returns true when this particular instruction is proven not to trap.  This
 // is intentionally stricter than !mayTrap(): operations such as division are

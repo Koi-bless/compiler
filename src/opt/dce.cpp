@@ -8,7 +8,8 @@
 
 namespace toyc {
 
-PassResult runDCE(IRFunction& function, bool preserveMayTrap) {
+PassResult runDCE(IRFunction& function, bool preserveMayTrap,
+                  const FunctionEffectAnalysis* effects) {
     std::vector<IRInstruction*> definitions(function.valueCount, nullptr);
     for (auto& block : function.blocks) for (auto& instruction : block.instructions) {
         if (instruction.result) definitions[*instruction.result] = &instruction;
@@ -26,7 +27,7 @@ PassResult runDCE(IRFunction& function, bool preserveMayTrap) {
     };
     for (auto& block : function.blocks) {
         for (auto& instruction : block.instructions)
-            if (hasSideEffects(instruction) ||
+            if (hasSideEffects(instruction, effects) ||
                 (preserveMayTrap && mayTrap(instruction) &&
                  !isKnownNonTrapping(instruction, function)))
                 markInstruction(&instruction);

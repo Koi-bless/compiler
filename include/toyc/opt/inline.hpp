@@ -4,10 +4,9 @@
 
 namespace toyc {
 
-// Inlines small, single-block leaf functions.  Keeping this first version
-// deliberately narrow avoids CFG cloning while still exposing pure expression
-// helpers to scalar and loop optimization.
-PassResult runFunctionInlining(IRModule& module, std::size_t growthBudget = 256,
-                               std::size_t calleeInstructionLimit = 24);
+// Clone small acyclic callees, including branches and multiple returns.  The
+// module budget and call-graph cycle check bound code growth.
+PassResult runFunctionInlining(IRModule& module, std::size_t growthBudget = 512,
+                               std::size_t calleeInstructionLimit = 64);
 
 } // namespace toyc
