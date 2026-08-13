@@ -53,6 +53,46 @@ int main() {
         });
     check(copyCount == 1, "copy hint did not eliminate a safe virtual copy");
 
+    toyc::MachineFunction coloredSpills;
+    coloredSpills.vregCount = 34;
+    coloredSpills.hasCalls = true;
+    coloredSpills.blocks.resize(1);
+    coloredSpills.blocks[0].id = 0;
+    for (int group = 0; group < 2; ++group) {
+        const int first = group * 17;
+        for (int index = 0; index < 17; ++index)
+            coloredSpills.blocks[0].instructions.push_back(
+                {toyc::MOpcode::LI, {toyc::vreg(first + index)},
+                 {toyc::Immediate{index + 1}}, {}, {}, {}});
+        for (int index = 0; index < 17; ++index)
+            coloredSpills.blocks[0].instructions.push_back(
+                {toyc::MOpcode::COPY, {toyc::PhysReg::A0},
+                 {toyc::vreg(first + index)}, {}, {}, {}});
+    }
+    coloredSpills.blocks[0].instructions.push_back(
+        {toyc::MOpcode::RET, {}, {}, {}, {}, {}});
+    toyc::LinearScanRegisterAllocator().run(coloredSpills);
+    check(coloredSpills.spillSlotCount == 1,
+          "non-overlapping spill intervals did not reuse a stack slot");
+
+    toyc::MachineFunction leafRegisters;
+    leafRegisters.vregCount = 20;
+    leafRegisters.blocks.resize(1);
+    leafRegisters.blocks[0].id = 0;
+    for (int index = 0; index < 20; ++index)
+        leafRegisters.blocks[0].instructions.push_back(
+            {toyc::MOpcode::LI, {toyc::vreg(index)},
+             {toyc::Immediate{index + 1}}, {}, {}, {}});
+    for (int index = 0; index < 20; ++index)
+        leafRegisters.blocks[0].instructions.push_back(
+            {toyc::MOpcode::COPY, {toyc::PhysReg::A0},
+             {toyc::vreg(index)}, {}, {}, {}});
+    leafRegisters.blocks[0].instructions.push_back(
+        {toyc::MOpcode::RET, {}, {}, {}, {}, {}});
+    toyc::LinearScanRegisterAllocator().run(leafRegisters);
+    check(leafRegisters.spillSlotCount == 0,
+          "argument registers were not made available to an argument-free leaf");
+
     std::string spillPressure = "int bump(int x){return x*3+1;}int main(){";
     for (int index = 0; index < 16; ++index)
         spillPressure += "int v" + std::to_string(index) + "=" +

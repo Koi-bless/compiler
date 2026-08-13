@@ -9,6 +9,7 @@ struct MachineCombineOptions {
     bool combineImmediates = true;
     bool useZeroRegister = true;
     bool reducePowerOfTwoMultiply = true;
+    bool reduceConstantDivision = true;
     bool propagateVirtualCopies = true;
     bool eliminateDeadDefinitions = true;
 };

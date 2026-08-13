@@ -51,20 +51,25 @@ private:
                  << semantic_.symbols[std::get<GlobalRef>(instruction.uses.at(0)).id].name << '\n'; break;
         case MOpcode::COPY:
             out_ << "  mv " << physRegName(def(instruction)) << ", " << physRegName(reg(instruction, 0)) << '\n'; break;
-        case MOpcode::ADD: case MOpcode::SUB: case MOpcode::MUL: case MOpcode::DIV:
+        case MOpcode::ADD: case MOpcode::SUB: case MOpcode::MUL: case MOpcode::MULH:
+        case MOpcode::DIV:
         case MOpcode::REM: case MOpcode::SLT: case MOpcode::SLTU: case MOpcode::XOR: {
             const char* mnemonic = instruction.opcode == MOpcode::ADD ? "add" : instruction.opcode == MOpcode::SUB ? "sub" :
-                instruction.opcode == MOpcode::MUL ? "mul" : instruction.opcode == MOpcode::DIV ? "div" :
+                instruction.opcode == MOpcode::MUL ? "mul" : instruction.opcode == MOpcode::MULH ? "mulh" :
+                instruction.opcode == MOpcode::DIV ? "div" :
                 instruction.opcode == MOpcode::REM ? "rem" : instruction.opcode == MOpcode::SLT ? "slt" :
                 instruction.opcode == MOpcode::SLTU ? "sltu" : "xor";
             out_ << "  " << mnemonic << ' ' << physRegName(def(instruction)) << ", "
                  << physRegName(reg(instruction, 0)) << ", " << physRegName(reg(instruction, 1)) << '\n';
             break;
         }
-        case MOpcode::ADDI: case MOpcode::XORI: case MOpcode::SLTIU: case MOpcode::SLLI: {
+        case MOpcode::ADDI: case MOpcode::XORI: case MOpcode::SLTIU:
+        case MOpcode::SLLI: case MOpcode::SRAI: case MOpcode::SRLI: {
             const char* mnemonic = instruction.opcode == MOpcode::ADDI ? "addi" :
                 instruction.opcode == MOpcode::XORI ? "xori" :
-                instruction.opcode == MOpcode::SLTIU ? "sltiu" : "slli";
+                instruction.opcode == MOpcode::SLTIU ? "sltiu" :
+                instruction.opcode == MOpcode::SLLI ? "slli" :
+                instruction.opcode == MOpcode::SRAI ? "srai" : "srli";
             out_ << "  " << mnemonic << ' ' << physRegName(def(instruction)) << ", "
                  << physRegName(reg(instruction, 0)) << ", " << imm(instruction, 1) << '\n';
             break;

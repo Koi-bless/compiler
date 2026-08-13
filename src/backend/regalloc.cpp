@@ -12,6 +12,12 @@ namespace {
 const std::vector<PhysReg> callerPool{PhysReg::T0, PhysReg::T1, PhysReg::T2, PhysReg::T3, PhysReg::T4,
     PhysReg::S1, PhysReg::S2, PhysReg::S3, PhysReg::S4, PhysReg::S5, PhysReg::S6,
     PhysReg::S7, PhysReg::S8, PhysReg::S9, PhysReg::S10, PhysReg::S11};
+const std::vector<PhysReg> leafCallerPool{
+    PhysReg::T0, PhysReg::T1, PhysReg::T2, PhysReg::T3, PhysReg::T4,
+    PhysReg::A0, PhysReg::A1, PhysReg::A2, PhysReg::A3,
+    PhysReg::A4, PhysReg::A5, PhysReg::A6, PhysReg::A7,
+    PhysReg::S1, PhysReg::S2, PhysReg::S3, PhysReg::S4, PhysReg::S5, PhysReg::S6,
+    PhysReg::S7, PhysReg::S8, PhysReg::S9, PhysReg::S10, PhysReg::S11};
 const std::vector<PhysReg> calleePool{PhysReg::S1, PhysReg::S2, PhysReg::S3, PhysReg::S4,
     PhysReg::S5, PhysReg::S6, PhysReg::S7, PhysReg::S8, PhysReg::S9, PhysReg::S10, PhysReg::S11};
 
@@ -19,6 +25,19 @@ const std::vector<PhysReg> calleePool{PhysReg::S1, PhysReg::S2, PhysReg::S3, Phy
 
 AllocationResult LinearScanRegisterAllocator::run(MachineFunction& function) const {
     const auto liveness = computeLiveness(function);
+    bool readsArgumentRegister = false;
+    for (const auto& block : function.blocks)
+        for (const auto& instruction : block.instructions)
+            for (const auto& operand : instruction.uses)
+                if (const auto* reg = std::get_if<PhysReg>(&operand);
+                    reg && *reg >= PhysReg::A0 && *reg <= PhysReg::A7)
+                    readsArgumentRegister = true;
+    // In a leaf with no incoming argument-register reads, a0-a7 are ordinary
+    // caller-saved temporaries. The final copy to a0 is a definition and is
+    // safe; parameterized leaves stay on the conservative pool until fixed
+    // physical-register interference is modeled explicitly.
+    const auto& generalPool = !function.hasCalls && !readsArgumentRegister
+        ? leafCallerPool : callerPool;
     AllocationResult result;
     result.registers.resize(function.vregCount);
     result.spillSlots.resize(function.vregCount);
@@ -49,10 +68,7 @@ AllocationResult LinearScanRegisterAllocator::run(MachineFunction& function) con
     std::map<VRegId, LiveInterval> intervals;
     for (const auto& interval : liveness.intervals) intervals[interval.vreg] = interval;
     std::vector<VRegId> active;
-    std::uint32_t nextSpill = 0;
     auto spill = [&](VRegId id) {
-        if (!result.rematerializations[id] && !result.spillSlots[id])
-            result.spillSlots[id] = StackSlot{StackSlotKind::Spill, nextSpill++};
         result.registers[id].reset();
     };
     for (const auto& current : liveness.intervals) {
@@ -61,7 +77,7 @@ AllocationResult LinearScanRegisterAllocator::run(MachineFunction& function) con
         }), active.end());
         std::set<PhysReg> used;
         for (const VRegId id : active) if (result.registers[id]) used.insert(*result.registers[id]);
-        const auto& pool = current.crossesCall ? calleePool : callerPool;
+        const auto& pool = current.crossesCall ? calleePool : generalPool;
         std::optional<PhysReg> hinted;
         if (options_.enableCopyHints) for (const VRegId other : hints[current.vreg]) {
             if (!result.registers[other]) continue;
@@ -107,6 +123,25 @@ AllocationResult LinearScanRegisterAllocator::run(MachineFunction& function) con
             return intervals[a].end != intervals[b].end ? intervals[a].end < intervals[b].end : a < b;
         });
     }
+
+    // Color abstract spill intervals onto reusable stack slots. A slot can be
+    // shared as soon as the previous value's inclusive interval ends before
+    // the next one starts.
+    std::vector<std::uint32_t> spillSlotEnds;
+    for (const auto& interval : liveness.intervals) {
+        const VRegId id = interval.vreg;
+        if (result.registers[id] || result.rematerializations[id]) continue;
+        std::size_t slot = 0;
+        while (slot < spillSlotEnds.size() &&
+               spillSlotEnds[slot] >= interval.start)
+            ++slot;
+        if (slot == spillSlotEnds.size()) spillSlotEnds.push_back(interval.end);
+        else spillSlotEnds[slot] = interval.end;
+        result.spillSlots[id] = StackSlot{
+            StackSlotKind::Spill, static_cast<std::uint32_t>(slot)};
+    }
+    const std::uint32_t nextSpill =
+        static_cast<std::uint32_t>(spillSlotEnds.size());
     for (auto& block : function.blocks) {
         std::vector<MInstruction> rewritten;
         for (auto instruction : block.instructions) {

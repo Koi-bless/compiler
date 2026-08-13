@@ -71,6 +71,25 @@ void runOptimizationPipeline(IRModule& module, const SemanticResult& semantic,
         return;
     }
 
+    {
+        const PassResult result = propagateImmutableGlobals(module, semantic);
+#ifndef NDEBUG
+        verifyIR(module, semantic);
+#else
+        if (options.verifyEach) verifyIR(module, semantic);
+#endif
+        if (options.printStats)
+            diagnostics << "pass ImmutableGlobals: changed="
+                        << (result.changed ? 1 : 0)
+                        << ", inst_replaced=" << result.instructionsReplaced
+                        << '\n';
+        if (options.dumpAfterEach) {
+            diagnostics << "*** IR after ImmutableGlobals: changed="
+                        << (result.changed ? 1 : 0) << " ***\n";
+            printIR(diagnostics, module, semantic);
+        }
+    }
+
     run("LocalDAG", [](IRFunction& function) { return runLocalDAG(function); });
     run("InstCombine", [](IRFunction& function) { return runInstCombine(function); });
     for (unsigned iteration = 1; iteration <= options.maxFixpointIterations; ++iteration) {

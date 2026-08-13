@@ -1,6 +1,7 @@
 foreach(test_name lexer_tests parser_tests semantic_tests cfg_tests dominator_tests
         ssa_tests mir_tests liveness_tests regalloc_tests abi_tests codegen_tests
-        optimization_tests machine_combine_tests machine_peephole_tests)
+        optimization_tests optimization_robustness_tests machine_combine_tests
+        machine_peephole_tests)
     add_executable(${test_name} ${test_name}.cpp)
     target_link_libraries(${test_name} PRIVATE toyc_lib)
     target_include_directories(${test_name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -8,6 +9,15 @@ foreach(test_name lexer_tests parser_tests semantic_tests cfg_tests dominator_te
 endforeach()
 
 if(UNIX)
+    add_test(
+        NAME opt_mode_tests
+        COMMAND bash ${PROJECT_SOURCE_DIR}/scripts/check_opt_mode.sh
+                $<TARGET_FILE:compiler>)
+
+    add_test(
+        NAME remote_benchmark_formula_tests
+        COMMAND bash ${PROJECT_SOURCE_DIR}/scripts/check_remote_benchmark_formula.sh)
+
     find_program(TOYC_RISCV_GCC riscv64-linux-gnu-gcc)
     find_program(TOYC_QEMU_RISCV32 qemu-riscv32)
     if(TOYC_RISCV_GCC AND TOYC_QEMU_RISCV32)

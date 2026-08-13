@@ -14,8 +14,10 @@ bool purePhysicalDefinition(MOpcode opcode) {
     switch (opcode) {
     case MOpcode::LI: case MOpcode::LA: case MOpcode::COPY:
     case MOpcode::ADD: case MOpcode::ADDI: case MOpcode::SUB: case MOpcode::MUL:
+    case MOpcode::MULH:
     case MOpcode::SLT: case MOpcode::SLTU: case MOpcode::XOR:
     case MOpcode::XORI: case MOpcode::SLTIU: case MOpcode::SLLI:
+    case MOpcode::SRAI: case MOpcode::SRLI:
         return true;
     default:
         return false;

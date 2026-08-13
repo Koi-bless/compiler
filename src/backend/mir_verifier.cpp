@@ -56,7 +56,7 @@ void checkInstructionShape(const MachineFunction& function, MIRStage stage,
         require(function, stage, oneRegisterDef() && instruction.uses.size() == 1 &&
                 isRegister(instruction.uses[0]), "COPY operand shape mismatch");
         break;
-    case MOpcode::ADD: case MOpcode::SUB: case MOpcode::MUL:
+    case MOpcode::ADD: case MOpcode::SUB: case MOpcode::MUL: case MOpcode::MULH:
     case MOpcode::DIV: case MOpcode::REM: case MOpcode::SLT:
     case MOpcode::SLTU: case MOpcode::XOR:
         require(function, stage, registerBinary(), "register binary operand shape mismatch");
@@ -71,7 +71,7 @@ void checkInstructionShape(const MachineFunction& function, MIRStage stage,
                     riscv32::fitsImmediate(std::get<Immediate>(instruction.uses[1]).value),
                     "out-of-range signed 12-bit immediate");
         break;
-    case MOpcode::SLLI:
+    case MOpcode::SLLI: case MOpcode::SRAI: case MOpcode::SRLI:
         require(function, stage, oneRegisterDef() && instruction.uses.size() == 2 &&
                 isRegister(instruction.uses[0]) &&
                 std::holds_alternative<Immediate>(instruction.uses[1]),

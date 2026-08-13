@@ -3,7 +3,9 @@
 #include <set>
 #include <vector>
 
+#include "toyc/frontend/semantic.hpp"
 #include "toyc/ir/ir.hpp"
+#include "toyc/opt/pass.hpp"
 
 namespace toyc {
 
@@ -33,5 +35,11 @@ struct FunctionEffectAnalysis {
 };
 
 FunctionEffectAnalysis analyzeFunctionEffects(const IRModule& module);
+
+// Replace loads of statically initialized globals that are never written by
+// the module. Runtime initializers appear as StoreGlobal instructions, so they
+// are deliberately excluded along with ordinary mutable globals.
+PassResult propagateImmutableGlobals(IRModule& module,
+                                     const SemanticResult& semantic);
 
 } // namespace toyc

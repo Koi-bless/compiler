@@ -75,13 +75,33 @@ int main() {
 
     auto costlyChain = arithmeticFunction(toyc::MOpcode::MUL, 11);
     toyc::runPreRAMachineCombine(costlyChain);
-    check(countOpcode(costlyChain, toyc::MOpcode::MUL) == 1,
-          "constant multiply was expanded beyond the target cost budget");
+    check(countOpcode(costlyChain, toyc::MOpcode::MUL) == 0 &&
+          countOpcode(costlyChain, toyc::MOpcode::SLLI) == 2 &&
+          countOpcode(costlyChain, toyc::MOpcode::ADD) +
+              countOpcode(costlyChain, toyc::MOpcode::SUB) == 2,
+          "four-operation constant multiply chain was not selected");
 
-    auto conservative = arithmeticFunction(toyc::MOpcode::DIV, 3);
-    toyc::runPreRAMachineCombine(conservative);
-    check(countOpcode(conservative, toyc::MOpcode::DIV) == 1,
-          "potentially trapping DIV was removed");
+    auto denseConstant = arithmeticFunction(toyc::MOpcode::MUL, 683);
+    toyc::runPreRAMachineCombine(denseConstant);
+    check(countOpcode(denseConstant, toyc::MOpcode::MUL) == 1,
+          "dense constant multiply exceeded the target cost budget");
+
+    auto constantDivide = arithmeticFunction(toyc::MOpcode::DIV, 3);
+    toyc::runPreRAMachineCombine(constantDivide);
+    check(countOpcode(constantDivide, toyc::MOpcode::DIV) == 0 &&
+          countOpcode(constantDivide, toyc::MOpcode::MULH) == 1,
+          "nonzero constant DIV was not lowered with a magic multiplier");
+
+    auto divideByZero = arithmeticFunction(toyc::MOpcode::DIV, 0);
+    toyc::runPreRAMachineCombine(divideByZero);
+    check(countOpcode(divideByZero, toyc::MOpcode::DIV) == 1,
+          "division by zero lost the target-defined DIV behavior");
+
+    auto constantRemainder = arithmeticFunction(toyc::MOpcode::REM, 1009);
+    toyc::runPreRAMachineCombine(constantRemainder);
+    check(countOpcode(constantRemainder, toyc::MOpcode::REM) == 0 &&
+          countOpcode(constantRemainder, toyc::MOpcode::MULH) == 1,
+          "nonzero constant REM was not lowered through a quotient");
 
     toyc::MachineFunction physicalCopy;
     physicalCopy.vregCount = 1;

@@ -113,4 +113,38 @@ FunctionEffectAnalysis analyzeFunctionEffects(const IRModule& module) {
     return analysis;
 }
 
+PassResult propagateImmutableGlobals(IRModule& module,
+                                     const SemanticResult& semantic) {
+    std::set<SymbolId> written;
+    for (const auto& function : module.functions)
+        for (const auto& block : function.blocks)
+            for (const auto& instruction : block.instructions)
+                if (instruction.op == IROp::StoreGlobal && instruction.global)
+                    written.insert(*instruction.global);
+
+    PassResult result;
+    for (auto& function : module.functions) {
+        for (auto& block : function.blocks) {
+            for (auto& instruction : block.instructions) {
+                if (instruction.op != IROp::LoadGlobal || !instruction.global ||
+                    written.contains(*instruction.global) ||
+                    *instruction.global >= semantic.symbols.size())
+                    continue;
+                const auto& symbol = semantic.symbols[*instruction.global];
+                if (!symbol.isGlobal || symbol.isConst || !symbol.initialValue)
+                    continue;
+                instruction.op = IROp::Constant;
+                instruction.immediate = *symbol.initialValue;
+                instruction.global.reset();
+                instruction.operands.clear();
+                instruction.phiInputs.clear();
+                instruction.callee.reset();
+                result.changed = true;
+                ++result.instructionsReplaced;
+            }
+        }
+    }
+    return result;
+}
+
 } // namespace toyc

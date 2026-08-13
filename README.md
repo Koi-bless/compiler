@@ -83,9 +83,11 @@ Deterministic differential testing against GCC is available with:
 ```
 
 The benchmark compares normal ToyC output, `-opt` output, and GCC `-O2`. It reports
-ELF text size and median QEMU wall time. By default each executable calls `main`
-once to match the course runner. Increase the iteration count when a benchmark is
-too short for stable local timing:
+ELF text size, median QEMU wall time, and the course-compatible percentage and
+points (`min(1, GCC_O2_Time / ToyC_Time) * 100 / 12`). The displayed percentage
+is truncated and points are rounded to two decimal places, matching the remote
+runner. By default each executable calls `main` once to match the course runner.
+Increase the sample count when a benchmark is too noisy:
 
 ```sh
 TOYC_BENCH_ITERATIONS=1 TOYC_BENCH_SAMPLES=3 \
@@ -95,3 +97,27 @@ TOYC_BENCH_ITERATIONS=1 TOYC_BENCH_SAMPLES=3 \
 QEMU wall time is useful for regression comparisons on the same machine, but it
 is not a target CPU cycle count. Final performance claims should be confirmed on
 the course runner or real RISC-V hardware.
+
+The supplied remote result snapshot and its inferred GCC `-O2` baselines can be
+replayed without the RISC-V toolchain:
+
+```sh
+./scripts/check_remote_benchmark_formula.sh
+```
+
+This verifies all 12 displayed percentages and points, including the remote
+total of 28.09/100. Inferred GCC milliseconds are approximate because the remote
+page exposes only points rounded to two decimal places.
+
+Before submitting, the optimization-mode sentinel can independently verify that
+the command-line `-opt` path is active and removes both dead pure calls and an
+exact hot loop:
+
+```sh
+./scripts/check_opt_mode.sh ./build-wsl/compiler
+```
+
+`optimization_robustness_tests` also exercises equivalent CFG, wrapper-call,
+comparison-orientation, stride, and safety-barrier variants. These tests guard
+optimization generality; the local `p01`-`p12` sources remain approximation
+benchmarks and must not be treated as copies of hidden course inputs.

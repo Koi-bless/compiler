@@ -89,6 +89,26 @@ void testGlobalAndCallBarrier() {
           "global store was deleted");
 }
 
+void testImmutableGlobalPropagation() {
+    TestPipeline immutable(R"(
+        int scale = 17;
+        int bias = 29;
+        int main() { return scale * 2 + bias; }
+    )", true);
+    check(countOp(immutable.ir, toyc::IROp::LoadGlobal) == 0,
+          "never-written globals were not propagated");
+    check(returnedConstant(immutable.ir.functions[0]) == 63,
+          "propagated immutable globals were not folded");
+
+    TestPipeline mutableGlobal(R"(
+        int state = 3;
+        int main() { state = state + 1; return state; }
+    )", true);
+    check(countOp(mutableGlobal.ir, toyc::IROp::LoadGlobal) != 0 &&
+          countOp(mutableGlobal.ir, toyc::IROp::StoreGlobal) != 0,
+          "written global was incorrectly treated as immutable");
+}
+
 void testFunctionEffectsAndCallDCE() {
     TestPipeline pure(R"(
         int dead(int x) {
@@ -283,8 +303,10 @@ void testInliningAndReadOnlyLoopCollapse() {
     )", true);
     check(toyc::analyzeLoops(readOnly.ir.functions[1]).empty(),
           "read-only helper loop was not collapsed");
-    check(countOp(readOnly.ir, toyc::IROp::LoadGlobal) >= 2,
-          "read-only loop collapse lost required global loads");
+    check(countOp(readOnly.ir, toyc::IROp::LoadGlobal) == 0,
+          "never-written globals were not propagated through the collapsed loop");
+    check(returnedConstant(readOnly.ir.functions[1]) == 87,
+          "immutable-global loop collapse produced the wrong result");
 }
 
 void testNestedConstantControlLoopCollapse() {
@@ -377,6 +399,7 @@ int main() {
         testConstantBranchAndDeadCode();
         testRedundantExpression();
         testGlobalAndCallBarrier();
+        testImmutableGlobalPropagation();
         testFunctionEffectsAndCallDCE();
         testMultiBlockInlining();
         testCompareBranchFusion();

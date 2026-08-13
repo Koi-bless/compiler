@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <bit>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <vector>
 
@@ -16,6 +17,221 @@ struct DefinitionInfo {
     std::vector<unsigned> counts;
     std::vector<std::optional<std::int32_t>> constants;
 };
+
+struct SignedPowerTerm {
+    unsigned shift = 0;
+    bool negative = false;
+};
+
+// Canonical signed-digit form minimizes the number of non-zero power-of-two
+// terms (for example 31 = 32 - 1). It gives a small, target-independent search
+// space for RV32I shift/add/sub multiplication candidates.
+std::vector<SignedPowerTerm> signedPowerTerms(std::uint32_t value) {
+    std::vector<SignedPowerTerm> terms;
+    unsigned shift = 0;
+    while (value != 0) {
+        if ((value & 1U) != 0) {
+            const bool negative = (value & 3U) == 3U;
+            terms.push_back({shift, negative});
+            value = negative ? value + 1U : value - 1U;
+        }
+        value >>= 1U;
+        ++shift;
+    }
+    std::stable_sort(terms.begin(), terms.end(),
+        [](const SignedPowerTerm& left, const SignedPowerTerm& right) {
+            return left.negative < right.negative;
+        });
+    return terms;
+}
+
+unsigned signedPowerCost(const std::vector<SignedPowerTerm>& terms) {
+    if (terms.empty()) return 0;
+    unsigned cost = terms.front().negative ? 1U : 0U;
+    for (const auto& term : terms)
+        if (term.shift != 0) ++cost;
+    cost += static_cast<unsigned>(terms.size() - 1);
+    return cost;
+}
+
+std::vector<MInstruction> buildConstantMultiply(
+    MachineFunction& function, MOperand destination, MOperand value,
+    std::uint32_t constant, SourceLocation location) {
+    const auto terms = signedPowerTerms(constant);
+    std::vector<MInstruction> sequence;
+    std::optional<MOperand> accumulator;
+    for (std::size_t index = 0; index < terms.size(); ++index) {
+        const auto& term = terms[index];
+        MOperand termValue = value;
+        if (term.shift != 0) {
+            termValue = vreg(function.vregCount++);
+            sequence.push_back({MOpcode::SLLI, {termValue},
+                {value, Immediate{static_cast<std::int32_t>(term.shift)}},
+                {}, {}, location});
+        }
+        const bool last = index + 1 == terms.size();
+        if (!accumulator) {
+            if (!term.negative) {
+                accumulator = termValue;
+            } else {
+                const MOperand next = last ? destination : MOperand{vreg(function.vregCount++)};
+                sequence.push_back({MOpcode::SUB, {next},
+                    {PhysReg::Zero, termValue}, {}, {}, location});
+                accumulator = next;
+            }
+            continue;
+        }
+        const MOperand next = last ? destination : MOperand{vreg(function.vregCount++)};
+        sequence.push_back({term.negative ? MOpcode::SUB : MOpcode::ADD,
+            {next}, {*accumulator, termValue}, {}, {}, location});
+        accumulator = next;
+    }
+    return sequence;
+}
+
+struct SignedDivisionMagic {
+    std::int32_t multiplier = 0;
+    unsigned shift = 0;
+};
+
+SignedDivisionMagic signedDivisionMagic(std::int32_t divisor) {
+    const std::uint64_t absolute = divisor < 0
+        ? static_cast<std::uint64_t>(-static_cast<std::int64_t>(divisor))
+        : static_cast<std::uint64_t>(divisor);
+    const std::uint64_t two31 = std::uint64_t{1} << 31U;
+    const std::uint64_t t = two31 +
+        (static_cast<std::uint32_t>(divisor) >> 31U);
+    const std::uint64_t anc = t - 1U - t % absolute;
+    unsigned exponent = 31;
+    std::uint64_t quotient1 = two31 / anc;
+    std::uint64_t remainder1 = two31 - quotient1 * anc;
+    std::uint64_t quotient2 = two31 / absolute;
+    std::uint64_t remainder2 = two31 - quotient2 * absolute;
+    std::uint64_t delta = 0;
+    do {
+        ++exponent;
+        quotient1 <<= 1U;
+        remainder1 <<= 1U;
+        if (remainder1 >= anc) {
+            ++quotient1;
+            remainder1 -= anc;
+        }
+        quotient2 <<= 1U;
+        remainder2 <<= 1U;
+        if (remainder2 >= absolute) {
+            ++quotient2;
+            remainder2 -= absolute;
+        }
+        delta = absolute - remainder2;
+    } while (quotient1 < delta ||
+             (quotient1 == delta && remainder1 == 0));
+
+    std::uint32_t bits = static_cast<std::uint32_t>(quotient2 + 1U);
+    if (divisor < 0) bits = 0U - bits;
+    return {std::bit_cast<std::int32_t>(bits), exponent - 32U};
+}
+
+void appendSignedConstantQuotient(
+    MachineFunction& function, std::vector<MInstruction>& sequence,
+    MOperand destination, MOperand dividend, std::int32_t divisor,
+    SourceLocation location) {
+    if (divisor == 1) {
+        sequence.push_back({MOpcode::COPY, {destination}, {dividend}, {}, {}, location});
+        return;
+    }
+    if (divisor == -1) {
+        sequence.push_back({MOpcode::SUB, {destination},
+            {PhysReg::Zero, dividend}, {}, {}, location});
+        return;
+    }
+
+    const std::uint32_t absolute = divisor < 0
+        ? static_cast<std::uint32_t>(-static_cast<std::int64_t>(divisor))
+        : static_cast<std::uint32_t>(divisor);
+    const auto fresh = [&]() -> MOperand { return vreg(function.vregCount++); };
+    if ((absolute & (absolute - 1U)) == 0) {
+        const unsigned shift = std::countr_zero(absolute);
+        const MOperand sign = fresh();
+        const MOperand bias = fresh();
+        const MOperand adjusted = fresh();
+        const MOperand positiveQuotient = divisor < 0 ? fresh() : destination;
+        sequence.push_back({MOpcode::SRAI, {sign},
+            {dividend, Immediate{31}}, {}, {}, location});
+        sequence.push_back({MOpcode::SRLI, {bias},
+            {sign, Immediate{static_cast<std::int32_t>(32U - shift)}},
+            {}, {}, location});
+        sequence.push_back({MOpcode::ADD, {adjusted},
+            {dividend, bias}, {}, {}, location});
+        sequence.push_back({MOpcode::SRAI, {positiveQuotient},
+            {adjusted, Immediate{static_cast<std::int32_t>(shift)}},
+            {}, {}, location});
+        if (divisor < 0)
+            sequence.push_back({MOpcode::SUB, {destination},
+                {PhysReg::Zero, positiveQuotient}, {}, {}, location});
+        return;
+    }
+
+    const auto magic = signedDivisionMagic(divisor);
+    const MOperand multiplier = fresh();
+    MOperand quotient = fresh();
+    sequence.push_back({MOpcode::LI, {multiplier},
+        {Immediate{magic.multiplier}}, {}, {}, location});
+    sequence.push_back({MOpcode::MULH, {quotient},
+        {dividend, multiplier}, {}, {}, location});
+    if (divisor > 0 && magic.multiplier < 0) {
+        const MOperand adjusted = fresh();
+        sequence.push_back({MOpcode::ADD, {adjusted},
+            {quotient, dividend}, {}, {}, location});
+        quotient = adjusted;
+    } else if (divisor < 0 && magic.multiplier > 0) {
+        const MOperand adjusted = fresh();
+        sequence.push_back({MOpcode::SUB, {adjusted},
+            {quotient, dividend}, {}, {}, location});
+        quotient = adjusted;
+    }
+    if (magic.shift != 0) {
+        const MOperand shifted = fresh();
+        sequence.push_back({MOpcode::SRAI, {shifted},
+            {quotient, Immediate{static_cast<std::int32_t>(magic.shift)}},
+            {}, {}, location});
+        quotient = shifted;
+    }
+    const MOperand correction = fresh();
+    sequence.push_back({MOpcode::SRLI, {correction},
+        {quotient, Immediate{31}}, {}, {}, location});
+    sequence.push_back({MOpcode::ADD, {destination},
+        {quotient, correction}, {}, {}, location});
+}
+
+std::vector<MInstruction> buildConstantDivision(
+    MachineFunction& function, MOperand destination, MOperand dividend,
+    std::int32_t divisor, bool remainder, SourceLocation location) {
+    std::vector<MInstruction> sequence;
+    if (!remainder) {
+        appendSignedConstantQuotient(
+            function, sequence, destination, dividend, divisor, location);
+        return sequence;
+    }
+    if (divisor == 1 || divisor == -1) {
+        sequence.push_back({MOpcode::LI, {destination},
+            {Immediate{0}}, {}, {}, location});
+        return sequence;
+    }
+    const std::int32_t absolute = static_cast<std::int32_t>(
+        divisor < 0 ? -static_cast<std::int64_t>(divisor) : divisor);
+    const MOperand quotient = vreg(function.vregCount++);
+    appendSignedConstantQuotient(
+        function, sequence, quotient, dividend, absolute, location);
+    const MOperand factor = vreg(function.vregCount++);
+    const MOperand product = vreg(function.vregCount++);
+    sequence.push_back({MOpcode::LI, {factor},
+        {Immediate{absolute}}, {}, {}, location});
+    sequence.push_back({MOpcode::MUL, {product},
+        {quotient, factor}, {}, {}, location});
+    sequence.push_back({MOpcode::SUB, {destination},
+        {dividend, product}, {}, {}, location});
+    return sequence;
+}
 
 DefinitionInfo buildDefinitions(const MachineFunction& function) {
     DefinitionInfo info;
@@ -50,8 +266,10 @@ bool pureDefinition(MOpcode opcode) {
     switch (opcode) {
     case MOpcode::LI: case MOpcode::LA: case MOpcode::COPY:
     case MOpcode::ADD: case MOpcode::ADDI: case MOpcode::SUB: case MOpcode::MUL:
+    case MOpcode::MULH:
     case MOpcode::SLT: case MOpcode::SLTU: case MOpcode::XOR:
     case MOpcode::XORI: case MOpcode::SLTIU: case MOpcode::SLLI:
+    case MOpcode::SRAI: case MOpcode::SRLI:
         return true;
     default:
         return false;
@@ -154,6 +372,61 @@ bool targetCombine(MachineFunction& function, const MachineCombineOptions& optio
                     if (expanded) break;
                 }
                 if (expanded) continue;
+
+                // A materialized constant plus an RV32M multiply has a target
+                // cost of roughly five simple ALU cycles on the baseline core.
+                // Keep the expansion bounded so register pressure cannot grow
+                // without limit for large, dense constants.
+                for (const std::size_t constantIndex : {std::size_t{1}, std::size_t{0}}) {
+                    const auto constant = constantFor(instruction.uses[constantIndex], definitions);
+                    if (!constant || *constant <= 0) continue;
+                    const auto terms = signedPowerTerms(
+                        static_cast<std::uint32_t>(*constant));
+                    if (terms.size() < 2 || signedPowerCost(terms) > 4) continue;
+                    const MOperand destination = instruction.defs[0];
+                    const MOperand value = instruction.uses[1 - constantIndex];
+                    auto sequence = buildConstantMultiply(
+                        function, destination, value,
+                        static_cast<std::uint32_t>(*constant), instruction.location);
+                    if (sequence.empty()) continue;
+                    block.instructions.erase(
+                        block.instructions.begin() +
+                        static_cast<std::ptrdiff_t>(instructionIndex));
+                    block.instructions.insert(
+                        block.instructions.begin() +
+                            static_cast<std::ptrdiff_t>(instructionIndex),
+                        sequence.begin(), sequence.end());
+                    instructionIndex += sequence.size() - 1;
+                    changed = true;
+                    expanded = true;
+                    result.instructionsRewritten += sequence.size();
+                    break;
+                }
+                if (expanded) continue;
+            }
+            if (options.reduceConstantDivision &&
+                (instruction.opcode == MOpcode::DIV ||
+                 instruction.opcode == MOpcode::REM) &&
+                instruction.defs.size() == 1 && instruction.uses.size() == 2) {
+                const auto divisor = constantFor(instruction.uses[1], definitions);
+                if (divisor && *divisor != 0 &&
+                    *divisor != std::numeric_limits<std::int32_t>::min()) {
+                    const bool remainder = instruction.opcode == MOpcode::REM;
+                    auto sequence = buildConstantDivision(
+                        function, instruction.defs[0], instruction.uses[0],
+                        *divisor, remainder, instruction.location);
+                    block.instructions.erase(
+                        block.instructions.begin() +
+                        static_cast<std::ptrdiff_t>(instructionIndex));
+                    block.instructions.insert(
+                        block.instructions.begin() +
+                            static_cast<std::ptrdiff_t>(instructionIndex),
+                        sequence.begin(), sequence.end());
+                    instructionIndex += sequence.size() - 1;
+                    changed = true;
+                    result.instructionsRewritten += sequence.size();
+                    continue;
+                }
             }
             if (options.useZeroRegister && zeroRegisterOpcode(instruction.opcode)) {
                 const std::size_t registerUses =
