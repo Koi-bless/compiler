@@ -6,6 +6,7 @@ namespace toyc {
 struct RegAllocOptions {
     bool enableCopyHints = false;
     bool enableRematerialization = false;
+    bool enableGraphColoring = false;
 };
 struct Rematerialization {
     MOpcode opcode = MOpcode::LI;

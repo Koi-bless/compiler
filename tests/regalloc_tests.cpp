@@ -53,6 +53,24 @@ int main() {
         });
     check(copyCount == 1, "copy hint did not eliminate a safe virtual copy");
 
+    toyc::MachineFunction fixedClobber;
+    fixedClobber.vregCount = 2;
+    fixedClobber.blocks.resize(1);
+    fixedClobber.blocks[0].id = 0;
+    fixedClobber.blocks[0].instructions = {
+        {toyc::MOpcode::LI, {toyc::vreg(0)}, {toyc::Immediate{11}}, {}, {}, {}},
+        {toyc::MOpcode::LI, {toyc::vreg(1)}, {toyc::Immediate{7}}, {}, {}, {}},
+        {toyc::MOpcode::COPY, {toyc::PhysReg::A0}, {toyc::vreg(1)}, {}, {}, {}},
+        {toyc::MOpcode::ADD, {toyc::vreg(1)},
+         {toyc::vreg(0), toyc::vreg(1)}, {}, {}, {}},
+        {toyc::MOpcode::COPY, {toyc::PhysReg::A0}, {toyc::vreg(1)}, {}, {}, {}},
+        {toyc::MOpcode::RET, {}, {}, {}, {}, {}}
+    };
+    const auto fixedAllocation = toyc::LinearScanRegisterAllocator(
+        toyc::RegAllocOptions{true, false, true}).run(fixedClobber);
+    check(fixedAllocation.registers[0] != toyc::PhysReg::A0,
+          "value live across a fixed a0 definition was assigned to a0");
+
     toyc::MachineFunction coloredSpills;
     coloredSpills.vregCount = 34;
     coloredSpills.hasCalls = true;

@@ -133,6 +133,7 @@ int main(int argc, char** argv) {
             toyc::RegAllocOptions registerOptions;
             registerOptions.enableCopyHints = options.optimize;
             registerOptions.enableRematerialization = options.optimize;
+            registerOptions.enableGraphColoring = options.optimize;
             toyc::LinearScanRegisterAllocator(registerOptions).run(function);
             if (options.optimize) {
                 const auto result = toyc::runPostRAPeephole(function);

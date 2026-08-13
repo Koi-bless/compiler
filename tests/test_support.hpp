@@ -67,7 +67,7 @@ struct TestPipeline {
         auto result = machine;
         for (auto& function : result.functions) {
             toyc::LinearScanRegisterAllocator(
-                toyc::RegAllocOptions{optimized, optimized}).run(function);
+                toyc::RegAllocOptions{optimized, optimized, optimized}).run(function);
             if (optimized) toyc::runPostRAPeephole(function);
             toyc::verifyMIR(function, toyc::MIRStage::PostRegisterAllocation);
             toyc::FrameLowering().run(function);

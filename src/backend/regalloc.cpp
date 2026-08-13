@@ -21,6 +21,140 @@ const std::vector<PhysReg> leafCallerPool{
 const std::vector<PhysReg> calleePool{PhysReg::S1, PhysReg::S2, PhysReg::S3, PhysReg::S4,
     PhysReg::S5, PhysReg::S6, PhysReg::S7, PhysReg::S8, PhysReg::S9, PhysReg::S10, PhysReg::S11};
 
+using InterferenceGraph = std::vector<std::set<VRegId>>;
+
+void addInterference(InterferenceGraph& graph, VRegId lhs, VRegId rhs) {
+    if (lhs == rhs || lhs >= graph.size() || rhs >= graph.size()) return;
+    graph[lhs].insert(rhs);
+    graph[rhs].insert(lhs);
+}
+
+std::vector<VRegId> virtualRegisters(const std::vector<MOperand>& operands) {
+    std::vector<VRegId> result;
+    for (const auto& operand : operands)
+        if (const auto* reg = std::get_if<VirtualReg>(&operand))
+            result.push_back(reg->id);
+    std::sort(result.begin(), result.end());
+    result.erase(std::unique(result.begin(), result.end()), result.end());
+    return result;
+}
+
+InterferenceGraph buildInterferenceGraph(
+    const MachineFunction& function, const LivenessResult& liveness) {
+    InterferenceGraph graph(function.vregCount);
+    for (const auto& block : function.blocks) {
+        std::set<VRegId> live = liveness.blocks[block.id].liveOut;
+        for (auto iterator = block.instructions.rbegin();
+             iterator != block.instructions.rend(); ++iterator) {
+            const auto defs = virtualRegisters(iterator->defs);
+            const auto uses = virtualRegisters(iterator->uses);
+            const bool virtualCopy = iterator->opcode == MOpcode::COPY &&
+                defs.size() == 1 && uses.size() == 1;
+            for (const VRegId definition : defs) {
+                for (const VRegId value : live)
+                    if (!virtualCopy || value != uses[0])
+                        addInterference(graph, definition, value);
+                live.erase(definition);
+            }
+            for (const VRegId use : uses) live.insert(use);
+        }
+    }
+    return graph;
+}
+
+bool containsRegister(const std::vector<PhysReg>& pool, PhysReg reg) {
+    return std::find(pool.begin(), pool.end(), reg) != pool.end();
+}
+
+void colorInterferenceGraph(
+    const MachineFunction& function, const LivenessResult& liveness,
+    const InterferenceGraph& graph, const std::vector<PhysReg>& generalPool,
+    const std::vector<std::vector<VRegId>>& hints,
+    const std::vector<std::vector<PhysReg>>& physicalHints,
+    const std::vector<std::set<PhysReg>>& forbiddenColors,
+    AllocationResult& result) {
+    std::vector<const LiveInterval*> intervalById(function.vregCount, nullptr);
+    for (const auto& interval : liveness.intervals)
+        intervalById[interval.vreg] = &interval;
+    std::set<VRegId> uncolored;
+    for (const auto& interval : liveness.intervals) uncolored.insert(interval.vreg);
+
+    while (!uncolored.empty()) {
+        VRegId selected = *uncolored.begin();
+        std::size_t bestSaturation = 0;
+        std::size_t bestDegree = 0;
+        double bestWeight = 0.0;
+        for (const VRegId candidate : uncolored) {
+            std::set<PhysReg> neighboringColors;
+            for (const VRegId neighbor : graph[candidate])
+                if (result.registers[neighbor])
+                    neighboringColors.insert(*result.registers[neighbor]);
+            const std::size_t degree = static_cast<std::size_t>(std::count_if(
+                graph[candidate].begin(), graph[candidate].end(),
+                [&](VRegId neighbor) { return uncolored.contains(neighbor); }));
+            const double weight = intervalById[candidate]->spillWeight;
+            if (neighboringColors.size() > bestSaturation ||
+                (neighboringColors.size() == bestSaturation && degree > bestDegree) ||
+                (neighboringColors.size() == bestSaturation && degree == bestDegree &&
+                 weight > bestWeight)) {
+                selected = candidate;
+                bestSaturation = neighboringColors.size();
+                bestDegree = degree;
+                bestWeight = weight;
+            }
+        }
+
+        const auto& pool = intervalById[selected]->crossesCall
+            ? calleePool : generalPool;
+        std::set<PhysReg> unavailable;
+        for (const VRegId neighbor : graph[selected])
+            if (result.registers[neighbor]) unavailable.insert(*result.registers[neighbor]);
+        unavailable.insert(forbiddenColors[selected].begin(),
+                           forbiddenColors[selected].end());
+
+        std::optional<PhysReg> chosen;
+        const auto accept = [&](PhysReg candidate) {
+            return containsRegister(pool, candidate) &&
+                   !unavailable.contains(candidate);
+        };
+        for (const PhysReg candidate : physicalHints[selected])
+            if (accept(candidate)) { chosen = candidate; break; }
+        if (!chosen)
+            for (const VRegId neighbor : hints[selected])
+                if (result.registers[neighbor] && accept(*result.registers[neighbor])) {
+                    chosen = *result.registers[neighbor];
+                    break;
+                }
+        if (!chosen)
+            for (const PhysReg candidate : pool)
+                if (accept(candidate)) { chosen = candidate; break; }
+        result.registers[selected] = chosen;
+        uncolored.erase(selected);
+    }
+}
+
+std::vector<std::set<PhysReg>> buildForbiddenColors(
+    const MachineFunction& function, const LivenessResult& liveness) {
+    std::vector<std::set<PhysReg>> forbidden(function.vregCount);
+    for (const auto& block : function.blocks) {
+        std::set<VRegId> live = liveness.blocks[block.id].liveOut;
+        for (auto iterator = block.instructions.rbegin();
+             iterator != block.instructions.rend(); ++iterator) {
+            std::set<PhysReg> physicalDefs = iterator->implicitDefs;
+            for (const auto& operand : iterator->defs)
+                if (const auto* reg = std::get_if<PhysReg>(&operand))
+                    physicalDefs.insert(*reg);
+            for (const VRegId value : live)
+                forbidden[value].insert(physicalDefs.begin(), physicalDefs.end());
+            for (const VRegId definition : virtualRegisters(iterator->defs))
+                live.erase(definition);
+            for (const VRegId use : virtualRegisters(iterator->uses))
+                live.insert(use);
+        }
+    }
+    return forbidden;
+}
+
 } // namespace
 
 AllocationResult LinearScanRegisterAllocator::run(MachineFunction& function) const {
@@ -43,6 +177,7 @@ AllocationResult LinearScanRegisterAllocator::run(MachineFunction& function) con
     result.spillSlots.resize(function.vregCount);
     result.rematerializations.resize(function.vregCount);
     std::vector<std::vector<VRegId>> hints(function.vregCount);
+    std::vector<std::vector<PhysReg>> physicalHints(function.vregCount);
     std::vector<unsigned> definitionCounts(function.vregCount, 0);
     for (const auto& block : function.blocks) for (const auto& instruction : block.instructions) {
         if (options_.enableCopyHints && instruction.opcode == MOpcode::COPY &&
@@ -53,6 +188,13 @@ AllocationResult LinearScanRegisterAllocator::run(MachineFunction& function) con
                 hints[destination->id].push_back(source->id);
                 hints[source->id].push_back(destination->id);
             }
+            const auto* physicalDestination =
+                std::get_if<PhysReg>(&instruction.defs[0]);
+            const auto* physicalSource = std::get_if<PhysReg>(&instruction.uses[0]);
+            if (destination && physicalSource)
+                physicalHints[destination->id].push_back(*physicalSource);
+            if (source && physicalDestination)
+                physicalHints[source->id].push_back(*physicalDestination);
         }
         for (const auto& operand : instruction.defs) if (const auto* reg = std::get_if<VirtualReg>(&operand)) {
             ++definitionCounts[reg->id];
@@ -67,11 +209,18 @@ AllocationResult LinearScanRegisterAllocator::run(MachineFunction& function) con
     }
     std::map<VRegId, LiveInterval> intervals;
     for (const auto& interval : liveness.intervals) intervals[interval.vreg] = interval;
+    if (options_.enableGraphColoring) {
+        const auto graph = buildInterferenceGraph(function, liveness);
+        const auto forbiddenColors = buildForbiddenColors(function, liveness);
+        colorInterferenceGraph(function, liveness, graph, generalPool, hints,
+                               physicalHints, forbiddenColors, result);
+    }
     std::vector<VRegId> active;
     auto spill = [&](VRegId id) {
         result.registers[id].reset();
     };
     for (const auto& current : liveness.intervals) {
+        if (options_.enableGraphColoring) continue;
         active.erase(std::remove_if(active.begin(), active.end(), [&](VRegId id) {
             return intervals[id].end < current.start;
         }), active.end());

@@ -19,10 +19,9 @@ std::vector<MInstruction> adjustStack(std::int32_t amount, SourceLocation locati
 std::vector<MInstruction> loadAt(PhysReg destination, std::int32_t offset, SourceLocation location = {}) {
     if (riscv32::fitsImmediate(offset))
         return {{MOpcode::LW, {destination}, {PhysReg::Sp, Immediate{offset}}, {}, {}, location}};
-    const PhysReg address = destination == PhysReg::T6 ? PhysReg::T5 : PhysReg::T6;
-    return {{MOpcode::LI, {address}, {Immediate{offset}}, {}, {}, location},
-            {MOpcode::ADD, {address}, {PhysReg::Sp, address}, {}, {}, location},
-            {MOpcode::LW, {destination}, {address, Immediate{0}}, {}, {}, location}};
+    return {{MOpcode::LI, {destination}, {Immediate{offset}}, {}, {}, location},
+            {MOpcode::ADD, {destination}, {PhysReg::Sp, destination}, {}, {}, location},
+            {MOpcode::LW, {destination}, {destination, Immediate{0}}, {}, {}, location}};
 }
 
 std::vector<MInstruction> storeAt(PhysReg value, std::int32_t offset, SourceLocation location = {}) {
