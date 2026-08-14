@@ -11,6 +11,7 @@
 #include "toyc/opt/ir_utils.hpp"
 #include "toyc/opt/loop_analysis.hpp"
 #include "toyc/opt/loop_summary.hpp"
+#include "toyc/opt/loop_unroll.hpp"
 
 namespace {
 
@@ -578,6 +579,65 @@ void testGlobalScalarLocalization() {
           "global localization crossed a call that observes the global");
 }
 
+void testSmallLoopUnroll() {
+    const std::string matrixSource = R"(
+        int cell(int row, int column) {
+            if (row == 0) {
+                if (column == 0) return 1;
+                if (column == 1) return 2;
+                return 3;
+            }
+            if (row == 1) {
+                if (column == 0) return 4;
+                if (column == 1) return 5;
+                return 6;
+            }
+            if (column == 0) return 7;
+            if (column == 1) return 8;
+            return 9;
+        }
+        int main() {
+            int row = 0;
+            int sum = 0;
+            while (row < 3) {
+                int column = 0;
+                while (column < 3) {
+                    sum = sum + cell(row, column);
+                    column = column + 1;
+                }
+                row = row + 1;
+            }
+            return sum;
+        }
+    )";
+    TestPipeline raw(matrixSource);
+    const auto unrolled = toyc::runSmallLoopUnroll(raw.ir.functions[1]);
+    check(unrolled.changed && toyc::analyzeLoops(raw.ir.functions[1]).empty(),
+          "small loop unroll: nested three-trip loops remain");
+    toyc::verifyIR(raw.ir, raw.semantic);
+
+    TestPipeline optimized(matrixSource, true);
+    check(toyc::analyzeLoops(optimized.ir.functions[1]).empty(),
+          "small loop unroll: optimized matrix loops remain");
+    check(countOp(optimized.ir, toyc::IROp::Call) == 0,
+          "small loop unroll: specialized matrix helper calls remain");
+    check(returnedConstant(optimized.ir.functions[1]) == 45,
+          "small loop unroll: matrix result was not folded");
+
+    TestPipeline fiveTrips(R"(
+        int main() {
+            int i = 0;
+            int result = 0;
+            while (i < 5) { result = result * 3 + i; i = i + 1; }
+            return result;
+        }
+    )");
+    const auto skipped = toyc::runSmallLoopUnroll(fiveTrips.ir.functions[0]);
+    check(!skipped.changed &&
+              !toyc::analyzeLoops(fiveTrips.ir.functions[0]).empty(),
+          "small loop unroll: loop beyond trip threshold was expanded");
+}
+
 void testNestedConstantControlLoopCollapse() {
     TestPipeline nested(R"(
         int main() {
@@ -682,6 +742,7 @@ int main() {
         testInliningAndReadOnlyLoopCollapse();
         testLoopFunctionInliningAndCollapse();
         testGlobalScalarLocalization();
+        testSmallLoopUnroll();
         testNestedConstantControlLoopCollapse();
         testTailRecursionElimination();
         testPipelineIdempotence();

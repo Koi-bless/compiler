@@ -127,7 +127,7 @@ bool mergeOneLinearBlock(IRFunction& function) {
 PassResult runSimplifyCFG(IRFunction& function) {
     PassResult result;
     const auto initialBlocks = function.blocks.size();
-    for (unsigned iteration = 0; iteration < 4; ++iteration) {
+    while (true) {
         bool changed = false;
         changed = foldOneBranch(function) || changed;
         const auto beforeUnreachable = function.blocks.size();

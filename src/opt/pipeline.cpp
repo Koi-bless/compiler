@@ -16,6 +16,7 @@
 #include "toyc/opt/licm.hpp"
 #include "toyc/opt/local_dag.hpp"
 #include "toyc/opt/loop_transform.hpp"
+#include "toyc/opt/loop_unroll.hpp"
 #include "toyc/opt/sccp.hpp"
 #include "toyc/opt/simplify_cfg.hpp"
 #include "toyc/opt/tail_recursion.hpp"
@@ -146,6 +147,9 @@ void runOptimizationPipeline(IRModule& module, const SemanticResult& semantic,
     });
     run("LoopFinalValue/LoopDeletion", [&](IRFunction& function) {
         return runLoopFinalValueAndDeletion(function, module);
+    });
+    run("SmallLoopUnroll", [](IRFunction& function) {
+        return runSmallLoopUnroll(function);
     });
     for (unsigned iteration = 1; iteration <= options.maxFixpointIterations;
          ++iteration) {

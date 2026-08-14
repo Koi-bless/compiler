@@ -33,6 +33,7 @@ add_library(toyc_lib
     src/opt/loop_analysis.cpp
     src/opt/loop_summary.cpp
     src/opt/loop_transform.cpp
+    src/opt/loop_unroll.cpp
     src/opt/licm.cpp
     src/opt/pipeline.cpp
     src/backend/mir.cpp
