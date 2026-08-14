@@ -164,6 +164,13 @@ void runOptimizationPipeline(IRModule& module, const SemanticResult& semantic,
             inlineBudget -= std::min(inlineBudget, inlined.instructionsReplaced);
         }
 
+        // Consume loops exposed by inlining before CFG cleanup can obscure the
+        // affine/final-value shape.  A later pass handles loops exposed by SCCP.
+        roundResult += run("EarlyLoopFinalValue/LoopDeletion",
+                           [&](IRFunction& function) {
+            return runLoopFinalValueAndDeletion(function, module);
+        }, round);
+
         roundResult += cleanup(nullptr);
         effects = analyzeFunctionEffects(module);
         roundResult += run("FunctionEffectsDCE", [&](IRFunction& function) {
