@@ -141,15 +141,21 @@ std::vector<std::set<PhysReg>> buildForbiddenColors(
         for (auto iterator = block.instructions.rbegin();
              iterator != block.instructions.rend(); ++iterator) {
             std::set<PhysReg> physicalDefs = iterator->implicitDefs;
+            std::set<PhysReg> physicalUses = iterator->implicitUses;
             for (const auto& operand : iterator->defs)
                 if (const auto* reg = std::get_if<PhysReg>(&operand))
                     physicalDefs.insert(*reg);
+            for (const auto& operand : iterator->uses)
+                if (const auto* reg = std::get_if<PhysReg>(&operand))
+                    physicalUses.insert(*reg);
             for (const VRegId value : live)
                 forbidden[value].insert(physicalDefs.begin(), physicalDefs.end());
             for (const VRegId definition : virtualRegisters(iterator->defs))
                 live.erase(definition);
             for (const VRegId use : virtualRegisters(iterator->uses))
                 live.insert(use);
+            for (const VRegId value : live)
+                forbidden[value].insert(physicalUses.begin(), physicalUses.end());
         }
     }
     return forbidden;
@@ -166,11 +172,12 @@ AllocationResult LinearScanRegisterAllocator::run(MachineFunction& function) con
                 if (const auto* reg = std::get_if<PhysReg>(&operand);
                     reg && *reg >= PhysReg::A0 && *reg <= PhysReg::A7)
                     readsArgumentRegister = true;
-    // In a leaf with no incoming argument-register reads, a0-a7 are ordinary
-    // caller-saved temporaries. The final copy to a0 is a definition and is
-    // safe; parameterized leaves stay on the conservative pool until fixed
-    // physical-register interference is modeled explicitly.
-    const auto& generalPool = !function.hasCalls && !readsArgumentRegister
+    // Graph coloring models fixed physical uses and definitions precisely, so
+    // a leaf may reuse a0-a7 after its incoming arguments have been consumed.
+    // Linear scan retains the older conservative rule.
+    const bool canReuseArgumentRegisters = !function.hasCalls &&
+        (options_.enableGraphColoring || !readsArgumentRegister);
+    const auto& generalPool = canReuseArgumentRegisters
         ? leafCallerPool : callerPool;
     AllocationResult result;
     result.registers.resize(function.vregCount);

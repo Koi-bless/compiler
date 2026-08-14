@@ -111,6 +111,51 @@ int main() {
     check(leafRegisters.spillSlotCount == 0,
           "argument registers were not made available to an argument-free leaf");
 
+    toyc::MachineFunction parameterLeaf;
+    constexpr int parameterCount = 8;
+    constexpr int liveValues = 24;
+    constexpr int sumValues = liveValues - 1;
+    parameterLeaf.vregCount = liveValues + sumValues;
+    parameterLeaf.blocks.resize(1);
+    parameterLeaf.blocks[0].id = 0;
+    for (int index = 0; index < parameterCount; ++index) {
+        const auto argument = static_cast<toyc::PhysReg>(
+            static_cast<int>(toyc::PhysReg::A0) + index);
+        parameterLeaf.blocks[0].instructions.push_back(
+            {toyc::MOpcode::COPY, {toyc::vreg(index)}, {argument}, {}, {}, {}});
+    }
+    for (int index = parameterCount; index < liveValues; ++index)
+        parameterLeaf.blocks[0].instructions.push_back(
+            {toyc::MOpcode::LI, {toyc::vreg(index)},
+             {toyc::Immediate{index + 1}}, {}, {}, {}});
+    int accumulator = liveValues;
+    parameterLeaf.blocks[0].instructions.push_back(
+        {toyc::MOpcode::ADD, {toyc::vreg(accumulator)},
+         {toyc::vreg(0), toyc::vreg(1)}, {}, {}, {}});
+    for (int index = 2; index < liveValues; ++index) {
+        const int next = accumulator + 1;
+        parameterLeaf.blocks[0].instructions.push_back(
+            {toyc::MOpcode::ADD, {toyc::vreg(next)},
+             {toyc::vreg(accumulator), toyc::vreg(index)}, {}, {}, {}});
+        accumulator = next;
+    }
+    parameterLeaf.blocks[0].instructions.push_back(
+        {toyc::MOpcode::COPY, {toyc::PhysReg::A0},
+         {toyc::vreg(accumulator)}, {}, {}, {}});
+    parameterLeaf.blocks[0].instructions.push_back(
+        {toyc::MOpcode::RET, {}, {}, {}, {toyc::PhysReg::A0}, {}});
+    const auto parameterAllocation = toyc::LinearScanRegisterAllocator(
+        toyc::RegAllocOptions{true, true, true}).run(parameterLeaf);
+    check(parameterLeaf.spillSlotCount == 0,
+          "parameterized leaf did not reuse dead argument registers");
+    for (int value = 0; value < parameterCount; ++value)
+        for (int unread = value + 1; unread < parameterCount; ++unread) {
+            const auto argument = static_cast<toyc::PhysReg>(
+                static_cast<int>(toyc::PhysReg::A0) + unread);
+            check(parameterAllocation.registers[value] != argument,
+                  "live value clobbered an unread incoming argument");
+        }
+
     std::string spillPressure = "int bump(int x){return x*3+1;}int main(){";
     for (int index = 0; index < 16; ++index)
         spillPressure += "int v" + std::to_string(index) + "=" +
