@@ -28,6 +28,7 @@ add_library(toyc_lib
     src/opt/simplify_cfg.cpp
     src/opt/tail_recursion.cpp
     src/opt/dce.cpp
+    src/opt/global_promotion.cpp
     src/opt/gvn.cpp
     src/opt/loop_analysis.cpp
     src/opt/loop_transform.cpp

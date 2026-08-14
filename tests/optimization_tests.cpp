@@ -7,6 +7,7 @@
 #include "toyc/ir/ir_printer.hpp"
 #include "toyc/opt/dce.hpp"
 #include "toyc/opt/function_effects.hpp"
+#include "toyc/opt/global_promotion.hpp"
 #include "toyc/opt/ir_utils.hpp"
 #include "toyc/opt/loop_analysis.hpp"
 
@@ -20,6 +21,22 @@ std::size_t countOp(const toyc::IRModule& module, toyc::IROp op) {
                 block.instructions.begin(), block.instructions.end(),
                 [&](const toyc::IRInstruction& instruction) {
                     return instruction.op == op;
+                }));
+    return count;
+}
+
+// Counts global loads/stores inside loop bodies; nested loops count their
+// shared blocks repeatedly, which is fine for the zero checks below.
+std::size_t countLoopGlobalOps(const toyc::IRFunction& function) {
+    std::size_t count = 0;
+    for (const auto& loop : toyc::analyzeLoops(function))
+        for (const toyc::BlockId block : loop.blocks)
+            count += static_cast<std::size_t>(std::count_if(
+                function.blocks[block].instructions.begin(),
+                function.blocks[block].instructions.end(),
+                [](const toyc::IRInstruction& instruction) {
+                    return instruction.op == toyc::IROp::LoadGlobal ||
+                           instruction.op == toyc::IROp::StoreGlobal;
                 }));
     return count;
 }
@@ -255,14 +272,59 @@ void testLoopDeletionSafety() {
 
     TestPipeline sideEffect(R"(
         int g = 0;
+        int touch(int x) {
+            if (x < 0) return touch(x - 1);
+            g = x;
+            return x;
+        }
         int main() {
             int i = 0;
-            while (i < 4) { g = i; i = i + 1; }
+            while (i < 4) { g = touch(i); i = i + 1; }
             return g;
         }
     )", true);
-    check(!toyc::analyzeLoops(sideEffect.ir.functions[0]).empty(),
+    check(!toyc::analyzeLoops(sideEffect.ir.functions[1]).empty(),
           "loop containing a global store was incorrectly deleted");
+}
+
+void testSymbolicDeadLoopDeletion() {
+    TestPipeline dead(R"(
+        int f(int n) {
+            int i = 0;
+            int x = 1;
+            while (i < n) { x = x * 2 + 1; i = i + 1; }
+            return 0;
+        }
+        int main() { return f(10); }
+    )", true);
+    check(toyc::analyzeLoops(dead.ir.functions[0]).empty(),
+          "dead loop with a symbolic bound was not deleted");
+    check(returnedConstant(dead.ir.functions[0]) == 0,
+          "dead loop deletion changed the return value");
+
+    TestPipeline liveOut(R"(
+        int f(int n) {
+            int i = 0;
+            int x = 1;
+            while (i < n) { x = x * 2 + 1; i = i + 1; }
+            return x;
+        }
+        int main() { return f(10); }
+    )", true);
+    check(!toyc::analyzeLoops(liveOut.ir.functions[0]).empty(),
+          "loop with a live-out value was incorrectly deleted");
+
+    TestPipeline trapping(R"(
+        int f(int n) {
+            int i = 0;
+            int x = 7;
+            while (i < n) { x = x % i; i = i + 1; }
+            return 0;
+        }
+        int main() { return f(10); }
+    )", true);
+    check(!toyc::analyzeLoops(trapping.ir.functions[0]).empty(),
+          "loop containing a potentially trapping remainder was incorrectly deleted");
 }
 
 void testPreciseNonTrappingDCE() {
@@ -378,6 +440,101 @@ void testTailRecursionElimination() {
           "loop containing a potentially nonterminating pure call was deleted");
 }
 
+void testLoopGlobalPromotion() {
+    TestPipeline pipeline(R"(
+        int g = 0;
+        int main() {
+            int i = 0;
+            while (i < 100) { g = g + i; i = i + 1; }
+            return g;
+        }
+    )");
+    const auto effects = toyc::analyzeFunctionEffects(pipeline.ir);
+    toyc::PassResult result;
+    for (auto& function : pipeline.ir.functions)
+        result += toyc::runGlobalPromotion(function, effects);
+    check(result.changed, "loop global promotion did not trigger");
+    check(countLoopGlobalOps(pipeline.ir.functions[0]) == 0,
+          "promoted loop still accesses the global");
+    const auto loops = toyc::analyzeLoops(pipeline.ir.functions[0]);
+    check(loops.size() == 1 && loops[0].preheader.has_value(),
+          "expected a single loop with a preheader");
+    const auto& preheader =
+        pipeline.ir.functions[0].blocks[*loops[0].preheader];
+    const bool preheaderLoads = std::any_of(
+        preheader.instructions.begin(), preheader.instructions.end(),
+        [](const toyc::IRInstruction& instruction) {
+            return instruction.op == toyc::IROp::LoadGlobal;
+        });
+    check(preheaderLoads, "promoted global was not loaded in the preheader");
+    check(countOp(pipeline.ir, toyc::IROp::StoreGlobal) == 1,
+          "promoted global was not stored exactly once on the exit edge");
+    toyc::verifyIR(pipeline.ir, pipeline.semantic);
+}
+
+void testLoopGlobalPromotionNested() {
+    TestPipeline pipeline(R"(
+        int g = 0;
+        int main() {
+            int i = 0;
+            int j = 0;
+            while (i < 10) {
+                j = 0;
+                while (j < 10) {
+                    g = g + i * j;
+                    if (g > 100) break;
+                    j = j + 1;
+                }
+                if (g > 50) g = g - 1; else g = g + 1;
+                i = i + 1;
+            }
+            return g;
+        }
+    )");
+    const auto effects = toyc::analyzeFunctionEffects(pipeline.ir);
+    toyc::PassResult result;
+    for (auto& function : pipeline.ir.functions)
+        result += toyc::runGlobalPromotion(function, effects);
+    check(result.changed, "nested loop global promotion did not trigger");
+    check(countLoopGlobalOps(pipeline.ir.functions[0]) == 0,
+          "nested loops still access the global");
+    toyc::verifyIR(pipeline.ir, pipeline.semantic);
+}
+
+void testLoopGlobalPromotionCallBarrier() {
+    TestPipeline pure(R"(
+        int g = 0;
+        int add(int a, int b) { return a + b; }
+        int main() {
+            int i = 0;
+            while (i < 10) { g = add(g, i); i = i + 1; }
+            return g;
+        }
+    )");
+    const auto pureEffects = toyc::analyzeFunctionEffects(pure.ir);
+    for (auto& function : pure.ir.functions)
+        (void)toyc::runGlobalPromotion(function, pureEffects);
+    check(countLoopGlobalOps(pure.ir.functions[1]) == 0,
+          "global was not promoted across a call that does not touch it");
+    toyc::verifyIR(pure.ir, pure.semantic);
+
+    TestPipeline writing(R"(
+        int g = 0;
+        int bump(int a) { g = g + 1; return a; }
+        int main() {
+            int i = 0;
+            while (i < 10) { g = g + bump(i); i = i + 1; }
+            return g;
+        }
+    )");
+    const auto writingEffects = toyc::analyzeFunctionEffects(writing.ir);
+    for (auto& function : writing.ir.functions)
+        (void)toyc::runGlobalPromotion(function, writingEffects);
+    check(countLoopGlobalOps(writing.ir.functions[1]) > 0,
+          "global was promoted across a call that writes it");
+    toyc::verifyIR(writing.ir, writing.semantic);
+}
+
 void testPipelineIdempotence() {
     TestPipeline pipeline("int main() { int x = 4 + 5; return x * 1; }", true);
     std::ostringstream before;
@@ -406,10 +563,14 @@ int main() {
         testLoopInvariantHoisting();
         testExactLoopFinalValues();
         testLoopDeletionSafety();
+        testSymbolicDeadLoopDeletion();
         testPreciseNonTrappingDCE();
         testInliningAndReadOnlyLoopCollapse();
         testNestedConstantControlLoopCollapse();
         testTailRecursionElimination();
+        testLoopGlobalPromotion();
+        testLoopGlobalPromotionNested();
+        testLoopGlobalPromotionCallBarrier();
         testPipelineIdempotence();
         std::cout << "optimization tests passed\n";
         return 0;

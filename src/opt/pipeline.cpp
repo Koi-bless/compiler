@@ -8,6 +8,7 @@
 #include "toyc/ir/verifier.hpp"
 #include "toyc/opt/dce.hpp"
 #include "toyc/opt/function_effects.hpp"
+#include "toyc/opt/global_promotion.hpp"
 #include "toyc/opt/gvn.hpp"
 #include "toyc/opt/inline.hpp"
 #include "toyc/opt/instcombine.hpp"
@@ -140,6 +141,9 @@ void runOptimizationPipeline(IRModule& module, const SemanticResult& semantic,
         }
     }
     effects = analyzeFunctionEffects(module);
+    run("GlobalPromotion", [&](IRFunction& function) {
+        return runGlobalPromotion(function, effects);
+    });
     run("LoopFinalValue/LoopDeletion", [&](IRFunction& function) {
         return runLoopFinalValueAndDeletion(function, module);
     });

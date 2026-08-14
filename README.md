@@ -40,7 +40,8 @@ checks their exit codes.
 
 The default pipeline canonicalizes SSA and conservatively removes dead
 instructions. `-opt` enables LocalDAG/InstCombine, SCCP, CFG simplification,
-DCE, dominator-scoped GVN, conservative LICM, compare-branch fusion, copy-aware
+DCE, dominator-scoped GVN, in-loop global scalar promotion (globals are loaded
+once in the preheader and stored back on exit edges), conservative LICM, compare-branch fusion, copy-aware
 linear scan, spilled-constant rematerialization, immediate-aware `addi`/`slli`
 selection, zero-register comparisons, pre-RA machine combine/DCE, post-RA
 physical-register and spill-slot peepholes, and adjacent-block fall-through.
