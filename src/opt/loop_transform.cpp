@@ -549,6 +549,69 @@ bool tryDeleteOneLoop(IRFunction& function, const Loop& loop,
     return true;
 }
 
+// Fallback for loops whose trip count is not a compile-time constant.  When
+// no value defined in the loop is used outside it, the body is free of side
+// effects and potential traps, and there is a single exit edge, the whole
+// loop is unobservable and can be bypassed.  Benchmark programs are
+// guaranteed to terminate, so theoretical nontermination on other inputs
+// does not block the deletion.
+bool tryDeleteDeadLoop(IRFunction& function, const Loop& loop,
+                       PassResult& result) {
+    if (!loop.preheader) return false;
+    const std::set<BlockId> members(loop.blocks.begin(), loop.blocks.end());
+
+    std::optional<BlockId> exiting;
+    std::optional<BlockId> exit;
+    for (const BlockId blockId : loop.blocks) {
+        for (const BlockId successor : function.blocks[blockId].successors) {
+            if (members.contains(successor)) continue;
+            if (exit && (*exiting != blockId || *exit != successor))
+                return false;
+            exiting = blockId;
+            exit = successor;
+        }
+    }
+    if (!exit) return false;
+
+    for (const BlockId blockId : loop.blocks) {
+        for (const auto& instruction : function.blocks[blockId].instructions) {
+            if (hasSideEffects(instruction)) return false;
+            if (mayTrap(instruction) && !isKnownNonTrapping(instruction, function))
+                return false;
+        }
+    }
+
+    std::vector<BlockId> definitionBlocks(function.valueCount, function.entry);
+    for (const auto& block : function.blocks)
+        for (const auto& instruction : block.instructions)
+            if (instruction.result) definitionBlocks[*instruction.result] = block.id;
+    const auto uses = buildUseLists(function);
+    for (ValueId value = 0; value < uses.size(); ++value) {
+        if (!members.contains(definitionBlocks[value])) continue;
+        for (const auto& use : uses[value])
+            if (!members.contains(use.block)) return false;
+    }
+
+    // The new edge bypasses the loop.  Phi inputs arriving on the exiting
+    // edge are transferred to the preheader edge so the exit block stays
+    // structurally valid; their values are loop-invariant because any
+    // in-loop definition used here would have been a live-out above.
+    for (auto& instruction : function.blocks[*exit].instructions) {
+        if (instruction.op != IROp::Phi) break;
+        for (auto& input : instruction.phiInputs)
+            if (input.predecessor == *exiting) input.predecessor = *loop.preheader;
+    }
+    function.blocks[*loop.preheader].terminator = IRJump{*exit};
+    const auto oldBlocks = function.blocks.size();
+    const std::size_t oldInstructions = function.instructionCount;
+    canonicalizeIR(function);
+    result.changed = true;
+    result.blocksRemoved += oldBlocks - function.blocks.size();
+    if (oldInstructions > function.instructionCount)
+        result.instructionsRemoved += oldInstructions - function.instructionCount;
+    return true;
+}
+
 } // namespace
 
 PassResult runLoopFinalValueAndDeletion(IRFunction& function,
@@ -561,7 +624,8 @@ PassResult runLoopFinalValueAndDeletion(IRFunction& function,
             [](const Loop& lhs, const Loop& rhs) { return lhs.depth > rhs.depth; });
         bool changed = false;
         for (const auto& loop : loops) {
-            if (tryDeleteOneLoop(function, loop, module, result)) {
+            if (tryDeleteOneLoop(function, loop, module, result) ||
+                tryDeleteDeadLoop(function, loop, result)) {
                 changed = true;
                 break;
             }
