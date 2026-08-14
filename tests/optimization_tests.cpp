@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <iostream>
+#include <set>
 #include <sstream>
 #include <string>
 
@@ -13,15 +14,23 @@
 
 namespace {
 
+std::size_t countOp(const toyc::IRBlock& block, toyc::IROp op) {
+    return static_cast<std::size_t>(std::count_if(
+        block.instructions.begin(), block.instructions.end(),
+        [&](const toyc::IRInstruction& instruction) {
+            return instruction.op == op;
+        }));
+}
+
+std::size_t countOp(const toyc::IRFunction& function, toyc::IROp op) {
+    std::size_t count = 0;
+    for (const auto& block : function.blocks) count += countOp(block, op);
+    return count;
+}
+
 std::size_t countOp(const toyc::IRModule& module, toyc::IROp op) {
     std::size_t count = 0;
-    for (const auto& function : module.functions)
-        for (const auto& block : function.blocks)
-            count += static_cast<std::size_t>(std::count_if(
-                block.instructions.begin(), block.instructions.end(),
-                [&](const toyc::IRInstruction& instruction) {
-                    return instruction.op == op;
-                }));
+    for (const auto& function : module.functions) count += countOp(function, op);
     return count;
 }
 
@@ -410,8 +419,12 @@ void testLoopDeletionSafety() {
             return g;
         }
     )", true);
-    check(!toyc::analyzeLoops(sideEffect.ir.functions[0]).empty(),
-          "loop containing a global store was incorrectly deleted");
+    check(toyc::analyzeLoops(sideEffect.ir.functions[0]).empty(),
+          "localized global loop was not deleted");
+    check(returnedConstant(sideEffect.ir.functions[0]) == 3,
+          "localized global loop produced the wrong final value");
+    check(countOp(sideEffect.ir.functions[0], toyc::IROp::StoreGlobal) == 1,
+          "localized global loop lost its final writeback");
 }
 
 void testPreciseNonTrappingDCE() {
@@ -479,6 +492,90 @@ void testLoopFunctionInliningAndCollapse() {
           "loop-function inlining: exact affine loop remains in main");
     check(returnedConstant(mainFunction).has_value(),
           "loop-function inlining: final value was not folded");
+}
+
+void testGlobalScalarLocalization() {
+    TestPipeline matrixLike(R"(
+        int a = 1;
+        int b = 2;
+        int c = 3;
+        int d = 4;
+        int main() {
+            int i = 0;
+            while (i < 1000) {
+                int na = (a * b + c) % 251;
+                int nb = (b * c + d) % 251;
+                int nc = (c * d + a) % 251;
+                int nd = (d * a + b) % 251;
+                if (i % 2 == 0) {
+                    a = na; b = nb; c = nc; d = nd;
+                } else {
+                    a = (na + 1) % 251;
+                    b = (nb + 1) % 251;
+                    c = (nc + 1) % 251;
+                    d = (nd + 1) % 251;
+                }
+                i = i + 1;
+            }
+            return (a + b + c + d) % 251;
+        }
+    )", true);
+    const auto& matrixMain = matrixLike.ir.functions[0];
+    const auto loops = toyc::analyzeLoops(matrixMain);
+    check(!loops.empty(),
+          "global localization: nonlinear matrix loop unexpectedly disappeared");
+    std::set<toyc::BlockId> loopBlocks;
+    for (const auto& loop : loops)
+        loopBlocks.insert(loop.blocks.begin(), loop.blocks.end());
+    for (const auto block : loopBlocks)
+        for (const auto& instruction : matrixMain.blocks[block].instructions)
+            check(instruction.op != toyc::IROp::LoadGlobal &&
+                      instruction.op != toyc::IROp::StoreGlobal,
+                  "global localization: memory operation remains in hot loop");
+    check(countOp(matrixMain, toyc::IROp::LoadGlobal) == 4,
+          "global localization: matrix cells were not loaded once");
+    check(countOp(matrixMain, toyc::IROp::StoreGlobal) == 4,
+          "global localization: matrix cells were not written back once");
+
+    TestPipeline multipleReturns(R"(
+        int state = 3;
+        int adjust(int n) {
+            while (n > 0) { state = state * 3 + n; n = n - 1; }
+            if (n == -7) return state;
+            return state + 1;
+        }
+        int main() { return adjust(3); }
+    )", true);
+    check(countOp(multipleReturns.ir.functions[0], toyc::IROp::LoadGlobal) == 1,
+          "global localization: multi-return function reloads its state");
+    check(countOp(multipleReturns.ir.functions[0], toyc::IROp::StoreGlobal) == 2,
+          "global localization: not every return writes back state");
+
+    TestPipeline barrier(R"(
+        int state = 1;
+        int observe(int depth) {
+            if (depth == 0) return state;
+            return observe(depth - 1) % 251;
+        }
+        int main() {
+            int i = 0;
+            int result = 0;
+            while (i < 8) {
+                state = state + 1;
+                result = observe(i);
+                i = i + 1;
+            }
+            return result;
+        }
+    )", true);
+    const auto& barrierMain = barrier.ir.functions[1];
+    bool loopStoreRemains = false;
+    for (const auto& loop : toyc::analyzeLoops(barrierMain))
+        for (const auto block : loop.blocks)
+            loopStoreRemains = loopStoreRemains ||
+                countOp(barrierMain.blocks[block], toyc::IROp::StoreGlobal) != 0;
+    check(loopStoreRemains,
+          "global localization crossed a call that observes the global");
 }
 
 void testNestedConstantControlLoopCollapse() {
@@ -584,6 +681,7 @@ int main() {
         testPreciseNonTrappingDCE();
         testInliningAndReadOnlyLoopCollapse();
         testLoopFunctionInliningAndCollapse();
+        testGlobalScalarLocalization();
         testNestedConstantControlLoopCollapse();
         testTailRecursionElimination();
         testPipelineIdempotence();

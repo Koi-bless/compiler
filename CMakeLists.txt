@@ -21,6 +21,7 @@ add_library(toyc_lib
     src/ir/verifier.cpp
     src/opt/ir_utils.cpp
     src/opt/function_effects.cpp
+    src/opt/global_localize.cpp
     src/opt/instcombine.cpp
     src/opt/inline.cpp
     src/opt/local_dag.cpp

@@ -1,0 +1,27 @@
+int a = 1;
+int b = 2;
+int c = 3;
+int d = 4;
+
+int main() {
+    int i = 0;
+    while (i < 20) {
+        int na = (a * b + c) % 251;
+        int nb = (b * c + d) % 251;
+        int nc = (c * d + a) % 251;
+        int nd = (d * a + b) % 251;
+        if (i % 2 == 0) {
+            a = na;
+            b = nb;
+            c = nc;
+            d = nd;
+        } else {
+            a = (na + 1) % 251;
+            b = (nb + 1) % 251;
+            c = (nc + 1) % 251;
+            d = (nd + 1) % 251;
+        }
+        i = i + 1;
+    }
+    return (a + b + c + d) % 251;
+}
