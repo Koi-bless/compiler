@@ -145,6 +145,7 @@ LivenessResult computeLiveness(const MachineFunction& function) {
                 auto& interval = result.intervals[reg->id];
                 interval.start = std::min(interval.start, position);
                 interval.end = std::max(interval.end, position);
+                interval.defs.push_back(position);
             }
             position += 2;
         }
@@ -165,6 +166,12 @@ LivenessResult computeLiveness(const MachineFunction& function) {
             live.insert(uses.begin(), uses.end());
         }
     }
+    // An interval that is live out of the block containing its end position is
+    // still live after that position even when no later use is visible there.
+    for (const auto& block : function.blocks)
+        for (const VRegId id : result.blocks[block.id].liveOut)
+            if (result.intervals[id].end == blockEnd[block.id])
+                result.intervals[id].liveOutAtEnd = true;
     result.intervals.erase(std::remove_if(result.intervals.begin(), result.intervals.end(),
         [&](const LiveInterval& interval) { return interval.start == unset; }), result.intervals.end());
     for (auto& interval : result.intervals)

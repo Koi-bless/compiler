@@ -21,6 +21,39 @@ const std::vector<PhysReg> leafCallerPool{
 const std::vector<PhysReg> calleePool{PhysReg::S1, PhysReg::S2, PhysReg::S3, PhysReg::S4,
     PhysReg::S5, PhysReg::S6, PhysReg::S7, PhysReg::S8, PhysReg::S9, PhysReg::S10, PhysReg::S11};
 
+// Decides whether the interval being allocated (current) may share the
+// register already assigned to a copy partner (other) even though their
+// intervals overlap. This is safe only when current's whole lifetime nests
+// inside other's without conflicting accesses:
+//  - current is defined exactly at its start, so it does not occupy the
+//    register before that point (a read of other at the same position is
+//    fine: RV32 instructions read sources before writing the destination);
+//  - other is never read while current occupies the register;
+//  - other is not redefined inside current's lifetime, except at current's
+//    last access, where the instruction (typically the copy itself) consumes
+//    current and hands the register back to other's new value.
+bool copyHintCompatible(const LiveInterval& current, const LiveInterval& other) {
+    if (other.end <= current.start) return true;
+    if (std::find(current.defs.begin(), current.defs.end(), current.start) == current.defs.end())
+        return false;
+    for (const std::uint32_t use : other.uses)
+        if (use > current.start && use <= current.end) return false;
+    bool redefinedAtCurrentEnd = false;
+    for (const std::uint32_t def : other.defs) {
+        if (def >= current.start && def < current.end) return false;
+        if (def == current.end) redefinedAtCurrentEnd = true;
+    }
+    if (redefinedAtCurrentEnd) {
+        if (current.liveOutAtEnd) return false;
+        if (std::find(current.uses.begin(), current.uses.end(), current.end) == current.uses.end())
+            return false;
+    }
+    // If other outlives current without such a handoff, other's later reads
+    // would observe current's value instead of its own.
+    if (other.end > current.end && !redefinedAtCurrentEnd) return false;
+    return true;
+}
+
 } // namespace
 
 AllocationResult LinearScanRegisterAllocator::run(MachineFunction& function) const {
@@ -83,10 +116,18 @@ AllocationResult LinearScanRegisterAllocator::run(MachineFunction& function) con
             if (!result.registers[other]) continue;
             const PhysReg candidate = *result.registers[other];
             if (std::find(pool.begin(), pool.end(), candidate) == pool.end()) continue;
-            bool conflict = used.contains(candidate);
-            if (conflict && intervals.contains(other) &&
-                intervals[other].end <= current.start)
-                conflict = false;
+            // The candidate may be held by several active intervals through
+            // earlier hint merges: every holder must be compatible. A holder
+            // other than the hint partner is fine once it dies at or before
+            // current's start (read-before-write within one instruction).
+            bool conflict = false;
+            for (const VRegId id : active) {
+                if (!result.registers[id] || *result.registers[id] != candidate) continue;
+                const bool safe = id == other
+                    ? intervals.contains(other) && copyHintCompatible(current, intervals[other])
+                    : intervals[id].end <= current.start;
+                if (!safe) { conflict = true; break; }
+            }
             if (!conflict) { hinted = candidate; break; }
         }
         const auto free = std::find_if(pool.begin(), pool.end(), [&](PhysReg reg) {

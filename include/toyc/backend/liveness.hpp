@@ -14,6 +14,8 @@ struct LiveInterval {
     std::vector<std::uint32_t> uses;
     bool crossesCall = false;
     double spillWeight = 0.0;
+    std::vector<std::uint32_t> defs;
+    bool liveOutAtEnd = false;
 };
 struct LivenessResult {
     std::vector<BlockLiveness> blocks;

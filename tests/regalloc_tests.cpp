@@ -53,6 +53,75 @@ int main() {
         });
     check(copyCount == 1, "copy hint did not eliminate a safe virtual copy");
 
+    // Loop-carried phi copies on a back edge: v0/v1 are the phi results,
+    // v2/v3 die into the back-edge copies, so each source may share its
+    // destination's register and both copies become no-ops.
+    const auto buildLoop = [](bool readDestinationInBody) {
+        toyc::MachineFunction function;
+        function.vregCount = readDestinationInBody ? 6 : 5;
+        function.blocks.resize(4);
+        function.blocks[0].id = 0;
+        function.blocks[0].successors = {1};
+        function.blocks[0].instructions = {
+            {toyc::MOpcode::LI, {toyc::vreg(0)}, {toyc::Immediate{0}}, {}, {}, {}},
+            {toyc::MOpcode::LI, {toyc::vreg(1)}, {toyc::Immediate{0}}, {}, {}, {}},
+            {toyc::MOpcode::LI, {toyc::vreg(4)}, {toyc::Immediate{100}}, {}, {}, {}},
+            {toyc::MOpcode::JUMP, {}, {toyc::MachineBlockRef{1}}, {}, {}, {}}
+        };
+        function.blocks[1].id = 1;
+        function.blocks[1].predecessors = {0, 2};
+        function.blocks[1].successors = {3, 2};
+        function.blocks[1].instructions = {
+            {toyc::MOpcode::BGE, {},
+             {toyc::vreg(1), toyc::vreg(4), toyc::MachineBlockRef{3}, toyc::MachineBlockRef{2}},
+             {}, {}, {}}
+        };
+        function.blocks[2].id = 2;
+        function.blocks[2].predecessors = {1};
+        function.blocks[2].successors = {1};
+        function.blocks[2].instructions = {
+            {toyc::MOpcode::ADD, {toyc::vreg(2)}, {toyc::vreg(0), toyc::vreg(1)}, {}, {}, {}},
+            {toyc::MOpcode::ADDI, {toyc::vreg(3)}, {toyc::vreg(1), toyc::Immediate{1}}, {}, {}, {}}
+        };
+        if (readDestinationInBody)
+            function.blocks[2].instructions.push_back(
+                {toyc::MOpcode::ADD, {toyc::vreg(5)}, {toyc::vreg(0), toyc::vreg(4)}, {}, {}, {}});
+        function.blocks[2].instructions.push_back(
+            {toyc::MOpcode::COPY, {toyc::vreg(0)}, {toyc::vreg(2)}, {}, {}, {}});
+        function.blocks[2].instructions.push_back(
+            {toyc::MOpcode::COPY, {toyc::vreg(1)}, {toyc::vreg(3)}, {}, {}, {}});
+        function.blocks[2].instructions.push_back(
+            {toyc::MOpcode::JUMP, {}, {toyc::MachineBlockRef{1}}, {}, {}, {}});
+        function.blocks[3].id = 3;
+        function.blocks[3].predecessors = {1};
+        function.blocks[3].instructions = {
+            {toyc::MOpcode::COPY, {toyc::PhysReg::A0}, {toyc::vreg(0)}, {}, {}, {}},
+            {toyc::MOpcode::RET, {}, {}, {}, {}, {}}
+        };
+        return function;
+    };
+
+    auto loopFunction = buildLoop(false);
+    const auto loopAllocation = toyc::LinearScanRegisterAllocator(
+        toyc::RegAllocOptions{true, false}).run(loopFunction);
+    check(loopAllocation.registers[2] == loopAllocation.registers[0],
+          "back-edge copy source did not share the destination's register");
+    check(loopAllocation.registers[3] == loopAllocation.registers[1],
+          "second back-edge copy source did not share the destination's register");
+    for (const auto& instruction : loopFunction.blocks[2].instructions)
+        check(instruction.opcode != toyc::MOpcode::COPY,
+              "coalesced back-edge copy survived register allocation");
+
+    // Same shape, but the destination is read by a third instruction while
+    // the source is live: sharing would corrupt that read, so no merge.
+    auto conflictFunction = buildLoop(true);
+    const auto conflictAllocation = toyc::LinearScanRegisterAllocator(
+        toyc::RegAllocOptions{true, false}).run(conflictFunction);
+    check(conflictAllocation.registers[2] != conflictAllocation.registers[0],
+          "copy hint merged despite a conflicting read of the destination");
+    check(conflictAllocation.registers[3] == conflictAllocation.registers[1],
+          "unconflicted back-edge copy was not coalesced");
+
     toyc::MachineFunction coloredSpills;
     coloredSpills.vregCount = 34;
     coloredSpills.hasCalls = true;
