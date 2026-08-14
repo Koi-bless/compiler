@@ -1,0 +1,15 @@
+int accumulate(int chooseLarge) {
+    int limit = 7;
+    if (chooseLarge) limit = 10;
+    int i = 0;
+    int value = 3;
+    while (i < limit) {
+        value = value * 5 + i;
+        i = i + 1;
+    }
+    return value;
+}
+
+int main() {
+    return accumulate(1);
+}

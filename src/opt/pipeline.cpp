@@ -1,5 +1,6 @@
 #include "toyc/opt/pipeline.hpp"
 
+#include <algorithm>
 #include <functional>
 #include <ostream>
 #include <string>
@@ -59,6 +60,35 @@ void runOptimizationPipeline(IRModule& module, const SemanticResult& semantic,
         }
         return result;
     };
+    const auto runModule = [&](const std::string& name,
+                               const std::function<PassResult()>& pass,
+                               unsigned iteration = 0) {
+        PassResult result = pass();
+        for (auto& function : module.functions)
+            result.changed = canonicalizeIR(function) || result.changed;
+#ifndef NDEBUG
+        verifyIR(module, semantic);
+#else
+        if (options.verifyEach) verifyIR(module, semantic);
+#endif
+        if (options.printStats) {
+            diagnostics << "pass " << name;
+            if (iteration != 0) diagnostics << " iteration=" << iteration;
+            diagnostics << ": changed=" << (result.changed ? 1 : 0)
+                        << ", inst_removed=" << result.instructionsRemoved
+                        << ", inst_replaced=" << result.instructionsReplaced
+                        << ", blocks_removed=" << result.blocksRemoved << '\n';
+        }
+        if (options.dumpAfterEach) {
+            diagnostics << "*** IR after " << name;
+            if (iteration != 0) diagnostics << " (iteration " << iteration << ')';
+            diagnostics << ": changed=" << (result.changed ? 1 : 0)
+                        << ", inst_removed=" << result.instructionsRemoved
+                        << ", blocks_removed=" << result.blocksRemoved << " ***\n";
+            printIR(diagnostics, module, semantic);
+        }
+        return result;
+    };
 
     run("CanonicalizeIR", [](IRFunction& function) {
         return PassResult{canonicalizeIR(function)};
@@ -71,108 +101,103 @@ void runOptimizationPipeline(IRModule& module, const SemanticResult& semantic,
         return;
     }
 
-    {
-        const PassResult result = propagateImmutableGlobals(module, semantic);
-#ifndef NDEBUG
-        verifyIR(module, semantic);
-#else
-        if (options.verifyEach) verifyIR(module, semantic);
-#endif
-        if (options.printStats)
-            diagnostics << "pass ImmutableGlobals: changed="
-                        << (result.changed ? 1 : 0)
-                        << ", inst_replaced=" << result.instructionsReplaced
-                        << '\n';
-        if (options.dumpAfterEach) {
-            diagnostics << "*** IR after ImmutableGlobals: changed="
-                        << (result.changed ? 1 : 0) << " ***\n";
-            printIR(diagnostics, module, semantic);
-        }
-    }
+    runModule("ImmutableGlobals", [&] {
+        return propagateImmutableGlobals(module, semantic);
+    });
 
     run("LocalDAG", [](IRFunction& function) { return runLocalDAG(function); });
     run("InstCombine", [](IRFunction& function) { return runInstCombine(function); });
-    for (unsigned iteration = 1; iteration <= options.maxFixpointIterations; ++iteration) {
-        bool changed = false;
-        changed = run("SCCP", [](IRFunction& function) { return runSCCP(function); },
-                      iteration).changed || changed;
-        changed = run("SimplifyCFG", [](IRFunction& function) {
-            return runSimplifyCFG(function);
-        }, iteration).changed || changed;
-        changed = run("InstCombine", [](IRFunction& function) {
-            return runInstCombine(function);
-        }, iteration).changed || changed;
-        changed = run("DCE", [](IRFunction& function) {
-            return runDCE(function, true);
-        }, iteration).changed || changed;
-        if (!changed) break;
-    }
+    const auto cleanup = [&](const FunctionEffectAnalysis* effects) {
+        PassResult total;
+        for (unsigned iteration = 1;
+             iteration <= options.maxFixpointIterations; ++iteration) {
+            PassResult current;
+            current += run("SCCP", [](IRFunction& function) {
+                return runSCCP(function);
+            }, iteration);
+            current += run("SimplifyCFG", [](IRFunction& function) {
+                return runSimplifyCFG(function);
+            }, iteration);
+            current += run("InstCombine", [](IRFunction& function) {
+                return runInstCombine(function);
+            }, iteration);
+            if (effects)
+                current += run("GVN", [&](IRFunction& function) {
+                    return runGVN(function, effects);
+                }, iteration);
+            current += run("DCE", [&](IRFunction& function) {
+                return runDCE(function, true, effects);
+            }, iteration);
+            total += current;
+            if (!current.changed) break;
+        }
+        return total;
+    };
+    cleanup(nullptr);
+
     run("TailRecursionElimination", [](IRFunction& function) {
         return runTailRecursionElimination(function);
     });
-    auto effects = analyzeFunctionEffects(module);
-    run("FunctionEffectsDCE", [&](IRFunction& function) {
-        return runDCE(function, true, &effects);
-    });
-    run("PureCallGVN", [&](IRFunction& function) {
-        return runGVN(function, &effects);
-    });
-    run("FunctionEffectsDCE", [&](IRFunction& function) {
-        return runDCE(function, true, &effects);
-    });
-    {
-        const PassResult result = runFunctionInlining(module);
-        for (auto& function : module.functions) canonicalizeIR(function);
-#ifndef NDEBUG
-        verifyIR(module, semantic);
-#else
-        if (options.verifyEach) verifyIR(module, semantic);
-#endif
-        if (options.printStats)
-            diagnostics << "pass Inline: changed=" << (result.changed ? 1 : 0)
-                        << ", inst_removed=" << result.instructionsRemoved
-                        << ", inst_replaced=" << result.instructionsReplaced
-                        << ", blocks_removed=" << result.blocksRemoved << '\n';
-        if (options.dumpAfterEach) {
-            diagnostics << "*** IR after Inline: changed="
-                        << (result.changed ? 1 : 0) << " ***\n";
-            printIR(diagnostics, module, semantic);
-        }
-    }
-    effects = analyzeFunctionEffects(module);
-    run("LoopFinalValue/LoopDeletion", [&](IRFunction& function) {
-        return runLoopFinalValueAndDeletion(function, module);
-    });
-    for (unsigned iteration = 1; iteration <= options.maxFixpointIterations;
-         ++iteration) {
-        bool changed = false;
-        changed = run("SCCP", [](IRFunction& function) { return runSCCP(function); },
-                      iteration).changed || changed;
-        changed = run("InstCombine", [](IRFunction& function) {
-            return runInstCombine(function);
-        }, iteration).changed || changed;
-        changed = run("SimplifyCFG", [](IRFunction& function) {
-            return runSimplifyCFG(function);
-        }, iteration).changed || changed;
-        changed = run("GVN", [&](IRFunction& function) {
-            return runGVN(function, &effects);
-        }, iteration).changed || changed;
-        changed = run("DCE", [&](IRFunction& function) {
+
+    constexpr std::size_t inlineInstructionLimit = 192;
+    std::size_t inlineBudget = 2048;
+    for (unsigned round = 1; round <= options.maxFixpointIterations; ++round) {
+        PassResult roundResult;
+
+        auto effects = analyzeFunctionEffects(module);
+        roundResult += run("FunctionEffectsDCE", [&](IRFunction& function) {
             return runDCE(function, true, &effects);
-        }, iteration).changed || changed;
-        if (!changed) break;
+        }, round);
+        roundResult += run("PureCallGVN", [&](IRFunction& function) {
+            return runGVN(function, &effects);
+        }, round);
+        roundResult += run("FunctionEffectsDCE", [&](IRFunction& function) {
+            return runDCE(function, true, &effects);
+        }, round);
+
+        if (inlineBudget != 0) {
+            const PassResult inlined = runModule("Inline", [&] {
+                return runFunctionInlining(
+                    module, inlineBudget, inlineInstructionLimit);
+            }, round);
+            roundResult += inlined;
+            inlineBudget -= std::min(inlineBudget, inlined.instructionsReplaced);
+        }
+
+        roundResult += cleanup(nullptr);
+        effects = analyzeFunctionEffects(module);
+        roundResult += run("FunctionEffectsDCE", [&](IRFunction& function) {
+            return runDCE(function, true, &effects);
+        }, round);
+        roundResult += run("GVN", [&](IRFunction& function) {
+            return runGVN(function, &effects);
+        }, round);
+        roundResult += run("FunctionEffectsDCE", [&](IRFunction& function) {
+            return runDCE(function, true, &effects);
+        }, round);
+
+        roundResult += run("LoopFinalValue/LoopDeletion",
+                           [&](IRFunction& function) {
+            return runLoopFinalValueAndDeletion(function, module);
+        }, round);
+
+        effects = analyzeFunctionEffects(module);
+        roundResult += cleanup(&effects);
+        roundResult += run("LICM", [](IRFunction& function) {
+            return runLICM(function);
+        }, round);
+        effects = analyzeFunctionEffects(module);
+        roundResult += cleanup(&effects);
+
+        roundResult += runModule("ImmutableGlobals", [&] {
+            return propagateImmutableGlobals(module, semantic);
+        }, round);
+        effects = analyzeFunctionEffects(module);
+        roundResult += cleanup(&effects);
+
+        if (!roundResult.changed) break;
     }
-    effects = analyzeFunctionEffects(module);
-    run("GVN", [&](IRFunction& function) { return runGVN(function, &effects); });
-    run("DCE", [&](IRFunction& function) {
-        return runDCE(function, true, &effects);
-    });
-    run("LICM", [](IRFunction& function) { return runLICM(function); });
-    run("GVN", [&](IRFunction& function) { return runGVN(function, &effects); });
-    run("DCE", [&](IRFunction& function) {
-        return runDCE(function, true, &effects);
-    });
-    run("SimplifyCFG", [](IRFunction& function) { return runSimplifyCFG(function); });
+
     run("CanonicalizeIR", [](IRFunction& function) {
         return PassResult{canonicalizeIR(function)};
     });

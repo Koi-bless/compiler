@@ -1,0 +1,11 @@
+int global = 7;
+
+int unreachableStore() {
+    int selector = 4;
+    if (selector == 5) global = 99;
+    return 0;
+}
+
+int main() {
+    return global * 9;
+}

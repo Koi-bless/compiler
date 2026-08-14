@@ -481,6 +481,46 @@ void testLoopFunctionInliningAndCollapse() {
           "loop-function inlining: final value was not folded");
 }
 
+void testModuleFixpointInteractions() {
+    TestPipeline exposedLoop(R"(
+        int accumulate(int chooseLarge) {
+            int limit = 7;
+            if (chooseLarge) limit = 1000000;
+            int i = 0;
+            int value = 3;
+            while (i < limit) {
+                value = value * 5 + i;
+                i = i + 1;
+            }
+            return value;
+        }
+        int main() { return accumulate(1); }
+    )", true);
+    const auto& mainFunction = exposedLoop.ir.functions[1];
+    check(countOp(exposedLoop.ir, toyc::IROp::Call) == 0,
+          "module fixpoint: loop helper call remains");
+    check(toyc::analyzeLoops(mainFunction).empty(),
+          "module fixpoint: SCCP-exposed loop was not revisited");
+    check(returnedConstant(mainFunction).has_value(),
+          "module fixpoint: SCCP-exposed loop result was not folded");
+
+    TestPipeline lateImmutable(R"(
+        int global = 7;
+        int unreachableStore() {
+            int selector = 4;
+            if (selector == 5) global = 99;
+            return 0;
+        }
+        int main() { return global * 9; }
+    )", true);
+    check(countOp(lateImmutable.ir, toyc::IROp::StoreGlobal) == 0,
+          "module fixpoint: unreachable global store remains");
+    check(countOp(lateImmutable.ir, toyc::IROp::LoadGlobal) == 0,
+          "module fixpoint: immutable global was not reconsidered");
+    check(returnedConstant(lateImmutable.ir.functions[1]) == 63,
+          "module fixpoint: late immutable global folded incorrectly");
+}
+
 void testNestedConstantControlLoopCollapse() {
     TestPipeline nested(R"(
         int main() {
@@ -584,6 +624,7 @@ int main() {
         testPreciseNonTrappingDCE();
         testInliningAndReadOnlyLoopCollapse();
         testLoopFunctionInliningAndCollapse();
+        testModuleFixpointInteractions();
         testNestedConstantControlLoopCollapse();
         testTailRecursionElimination();
         testPipelineIdempotence();
